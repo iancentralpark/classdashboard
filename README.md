@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 수업 관리 대시보드
 
 선생님을 위한 Next.js 기반 수업 관리 시스템입니다.
@@ -40,3 +41,7 @@ Vercel에 배포하는 것을 추천합니다:
 2. 코드 업로드
 3. [vercel.com](https://vercel.com)에서 GitHub 리포지토리 import
 4. Deploy
+=======
+# classdashboard
+class management dashboard
+>>>>>>> c10a579fa3889a68a4199bcd103534b4843e2274
