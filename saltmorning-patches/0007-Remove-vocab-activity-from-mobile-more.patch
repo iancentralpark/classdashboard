@@ -1,0 +1,129 @@
+From 9e8d213536bd674c61cb551606dafe4c068fd50f Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sat, 1 Aug 2026 23:54:45 +0000
+Subject: [PATCH] Remove duplicate Vocab Activity from mobile More tab.
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Activity remains available via Vocab Monitor → Log.
+---
+ Index.html                     | 1 -
+ server/public/Student.html     | 8 ++++----
+ server/public/Teacher.html     | 3 +--
+ server/public/sw.js            | 2 +-
+ server/scripts/build-public.js | 2 +-
+ server/src/routes.js           | 2 +-
+ server/teacher-src/Index.html  | 1 -
+ 7 files changed, 8 insertions(+), 11 deletions(-)
+
+diff --git a/Index.html b/Index.html
+index 75944b4..378be1b 100644
+--- a/Index.html
++++ b/Index.html
+@@ -6435,7 +6435,6 @@
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassLogBtn"><i class="fa-solid fa-book-open"></i> Class Log</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassPendingBtn"><i class="fa-solid fa-hourglass-half"></i> Pending HW</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-layer-group"></i> Vocab Monitor</button>
+-            <button type="button" class="teacher-more-btn" data-trigger-click="vocabActivityBtn"><i class="fa-solid fa-list-ul"></i> Vocab Activity</button>
+             <button type="button" class="teacher-more-btn" id="teacherMobileThemeBtn"><i class="fa-solid fa-moon"></i> Dark Mode</button>
+         </div>
+         <button type="button" class="btn btn-link btn-sm text-muted text-decoration-none px-0 mt-2 withdrawn-entry-link" data-trigger-click="openWithdrawnStudentsBtn">
+diff --git a/server/public/Student.html b/server/public/Student.html
+index 0b78362..0a12c64 100644
+--- a/server/public/Student.html
++++ b/server/public/Student.html
+@@ -11,7 +11,7 @@
+     </script>
+     <script>
+         (function() {
+-            var PORTAL_BUILD = '2026-08-01.08';
++            var PORTAL_BUILD = '2026-08-01.09';
+             window.PORTAL_BUILD = PORTAL_BUILD;
+             var KEY = 'mrpark_portal_build';
+             try {
+@@ -2271,9 +2271,9 @@
+             .stamp-mark { width: 54px; height: 54px; margin-left: -27px; margin-top: -27px; }
+         }
+     </style>
+-<link rel="stylesheet" href="/css/vocab-learn.css?v=2026-08-01.08">
+-<script src="/js/vocab-mock-data.js?v=2026-08-01.08" defer></script>
+-<script src="/js/vocab-learn.js?v=2026-08-01.08" defer></script>
++<link rel="stylesheet" href="/css/vocab-learn.css?v=2026-08-01.09">
++<script src="/js/vocab-mock-data.js?v=2026-08-01.09" defer></script>
++<script src="/js/vocab-learn.js?v=2026-08-01.09" defer></script>
+ </head>
+ <body>
+ <div class="wrap">
+diff --git a/server/public/Teacher.html b/server/public/Teacher.html
+index 3a26300..fae3630 100644
+--- a/server/public/Teacher.html
++++ b/server/public/Teacher.html
+@@ -49,7 +49,7 @@
+         // deploy; on mismatch we force exactly one hard reload (with a cache-busting
+         // query param) so the home-screen icon can never get stuck on stale UI.
+         (function() {
+-            var APP_BUILD = '2026-08-01.08';
++            var APP_BUILD = '2026-08-01.09';
+             window.MRPARK_BUILD = APP_BUILD;
+             var KEY = 'mrpark_app_build';
+             try {
+@@ -6581,7 +6581,6 @@
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassLogBtn"><i class="fa-solid fa-book-open"></i> Class Log</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassPendingBtn"><i class="fa-solid fa-hourglass-half"></i> Pending HW</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-layer-group"></i> Vocab Monitor</button>
+-            <button type="button" class="teacher-more-btn" data-trigger-click="vocabActivityBtn"><i class="fa-solid fa-list-ul"></i> Vocab Activity</button>
+             <button type="button" class="teacher-more-btn" id="teacherMobileThemeBtn"><i class="fa-solid fa-moon"></i> Dark Mode</button>
+         </div>
+         <button type="button" class="btn btn-link btn-sm text-muted text-decoration-none px-0 mt-2 withdrawn-entry-link" data-trigger-click="openWithdrawnStudentsBtn">
+diff --git a/server/public/sw.js b/server/public/sw.js
+index 4d66566..3daf3d7 100644
+--- a/server/public/sw.js
++++ b/server/public/sw.js
+@@ -1,4 +1,4 @@
+-const CACHE = 'mrpark-shell-2026-08-01.08';
++const CACHE = 'mrpark-shell-2026-08-01.09';
+ const SHELL = [
+   '/',
+   '/offline.html',
+diff --git a/server/scripts/build-public.js b/server/scripts/build-public.js
+index 9477150..91e5697 100644
+--- a/server/scripts/build-public.js
++++ b/server/scripts/build-public.js
+@@ -7,7 +7,7 @@
+ const fs = require('fs');
+ const path = require('path');
+ 
+-const PORTAL_BUILD = '2026-08-01.08';
++const PORTAL_BUILD = '2026-08-01.09';
+ 
+ const serverDir = path.join(__dirname, '..');
+ const repoRoot = path.join(serverDir, '..');
+diff --git a/server/src/routes.js b/server/src/routes.js
+index f05b8e2..bc7e83a 100644
+--- a/server/src/routes.js
++++ b/server/src/routes.js
+@@ -228,7 +228,7 @@ router.get('/health', (req, res) => {
+   res.json({
+     ok: true,
+     service: 'mrpark-class-api',
+-    portalBuild: '2026-08-01.08',
++    portalBuild: '2026-08-01.09',
+     pwaEnabled: true,
+     phase: 5,
+     supabase: isSupabaseEnabled(),
+diff --git a/server/teacher-src/Index.html b/server/teacher-src/Index.html
+index 75944b4..378be1b 100644
+--- a/server/teacher-src/Index.html
++++ b/server/teacher-src/Index.html
+@@ -6435,7 +6435,6 @@
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassLogBtn"><i class="fa-solid fa-book-open"></i> Class Log</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassPendingBtn"><i class="fa-solid fa-hourglass-half"></i> Pending HW</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-layer-group"></i> Vocab Monitor</button>
+-            <button type="button" class="teacher-more-btn" data-trigger-click="vocabActivityBtn"><i class="fa-solid fa-list-ul"></i> Vocab Activity</button>
+             <button type="button" class="teacher-more-btn" id="teacherMobileThemeBtn"><i class="fa-solid fa-moon"></i> Dark Mode</button>
+         </div>
+         <button type="button" class="btn btn-link btn-sm text-muted text-decoration-none px-0 mt-2 withdrawn-entry-link" data-trigger-click="openWithdrawnStudentsBtn">
+-- 
+2.43.0
+
