@@ -1,0 +1,859 @@
+From f719b91288220ef04e7f0e48808d6a8a5852ce70 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sat, 1 Aug 2026 09:17:58 +0000
+Subject: [PATCH] Add Vocab LMS and Activity to teacher mobile More tab.
+
+Expose the existing Vocab LMS modal from More, and add a Vocab Activity
+feed modal backed by /api/teacher/activity for promote/demote/set logs.
+---
+ Index.html                     | 203 ++++++++++++++++++++++++++++++++
+ server/public/Student.html     |   8 +-
+ server/public/Teacher.html     | 205 ++++++++++++++++++++++++++++++++-
+ server/public/sw.js            |   2 +-
+ server/scripts/build-public.js |   2 +-
+ server/src/routes.js           |   2 +-
+ server/teacher-src/Index.html  | 203 ++++++++++++++++++++++++++++++++
+ 7 files changed, 617 insertions(+), 8 deletions(-)
+
+diff --git a/Index.html b/Index.html
+index 1e94b76..56ac61a 100644
+--- a/Index.html
++++ b/Index.html
+@@ -5293,6 +5293,62 @@
+         }
+         body.teacher-mobile .teacher-more-btn i { font-size: 1.25rem; margin: 0; }
+ 
++        .vocab-activity-list {
++            display: flex;
++            flex-direction: column;
++            gap: 0.65rem;
++        }
++        .vocab-activity-item {
++            border: 1px solid rgba(59, 158, 221, 0.18);
++            border-radius: 14px;
++            background: #f8fbfe;
++            padding: 0.75rem 0.9rem;
++        }
++        .vocab-activity-item-top {
++            display: flex;
++            flex-wrap: wrap;
++            align-items: baseline;
++            gap: 0.35rem 0.65rem;
++            margin-bottom: 0.25rem;
++        }
++        .vocab-activity-kind {
++            font-size: 0.72rem;
++            font-weight: 800;
++            letter-spacing: 0.02em;
++            text-transform: uppercase;
++            color: #2b6f97;
++            background: rgba(59, 158, 221, 0.12);
++            border-radius: 999px;
++            padding: 0.15rem 0.55rem;
++        }
++        .vocab-activity-kind.is-promote { color: #0f766e; background: rgba(16, 185, 129, 0.14); }
++        .vocab-activity-kind.is-demote { color: #b45309; background: rgba(245, 158, 11, 0.16); }
++        .vocab-activity-kind.is-set { color: #1d4ed8; background: rgba(59, 130, 246, 0.12); }
++        .vocab-activity-kind.is-place { color: #6d28d9; background: rgba(139, 92, 246, 0.14); }
++        .vocab-activity-time {
++            margin-left: auto;
++            font-size: 0.78rem;
++            color: #6b7c8a;
++            white-space: nowrap;
++        }
++        .vocab-activity-title {
++            font-weight: 700;
++            color: #163247;
++            font-size: 0.95rem;
++        }
++        .vocab-activity-detail {
++            font-size: 0.86rem;
++            color: #4b6170;
++            margin-top: 0.15rem;
++        }
++        [data-theme="dark"] .vocab-activity-item {
++            background: rgba(255, 255, 255, 0.04);
++            border-color: rgba(255, 255, 255, 0.1);
++        }
++        [data-theme="dark"] .vocab-activity-title { color: #e8f1f7; }
++        [data-theme="dark"] .vocab-activity-detail,
++        [data-theme="dark"] .vocab-activity-time { color: #9db0bd; }
++
+         /* ===== Student detail page (opened from roster / attendance card) ===== */
+         body.teacher-mobile #studentDetailSection .step-label,
+         body.teacher-mobile #studentDetailSection .step-label .step-num {
+@@ -5980,6 +6036,9 @@
+                 <button type="button" class="btn btn-sm btn-outline-info rounded-pill px-3" id="vocabLmsBtn">
+                     <i class="fa-solid fa-layer-group"></i> Vocab LMS
+                 </button>
++                <button type="button" class="btn btn-sm btn-outline-primary rounded-pill px-3" id="vocabActivityBtn">
++                    <i class="fa-solid fa-list-ul"></i> Vocab Activity
++                </button>
+                 <button type="button" class="btn btn-sm btn-warning rounded-pill px-3" id="openClassPendingBtn">
+                     <i class="fa-solid fa-hourglass-half"></i> Pending Homework
+                 </button>
+@@ -6204,6 +6263,8 @@
+             <button type="button" class="teacher-more-btn" data-trigger-click="openReportBtn"><i class="fa-solid fa-chart-line"></i> Monthly Report</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassLogBtn"><i class="fa-solid fa-book-open"></i> Class Log</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassPendingBtn"><i class="fa-solid fa-hourglass-half"></i> Pending HW</button>
++            <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-layer-group"></i> Vocab LMS</button>
++            <button type="button" class="teacher-more-btn" data-trigger-click="vocabActivityBtn"><i class="fa-solid fa-list-ul"></i> Vocab Activity</button>
+             <button type="button" class="teacher-more-btn" id="teacherMobileThemeBtn"><i class="fa-solid fa-moon"></i> Dark Mode</button>
+         </div>
+         <button type="button" class="btn btn-link btn-sm text-muted text-decoration-none px-0 mt-2 withdrawn-entry-link" data-trigger-click="openWithdrawnStudentsBtn">
+@@ -6937,6 +6998,37 @@
+     </div>
+ </div>
+ 
++<!-- Vocab Booster activity feed (promote / demote / set attempts) -->
++<div class="modal fade app-modal" id="vocabActivityModal" tabindex="-1" aria-hidden="true">
++    <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
++        <div class="modal-content">
++            <div class="modal-header">
++                <h5 class="modal-title"><i class="fa-solid fa-list-ul"></i> Vocab Activity — <span id="vocabActivityClassName">Class</span></h5>
++                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
++            </div>
++            <div class="modal-body">
++                <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
++                    <label class="small fw-semibold mb-0" for="vocabActivityDays">Show last</label>
++                    <select class="form-select form-select-sm" id="vocabActivityDays" style="width:auto;min-width:7rem;">
++                        <option value="1">1 day</option>
++                        <option value="3">3 days</option>
++                        <option value="7" selected>7 days</option>
++                        <option value="14">14 days</option>
++                        <option value="30">30 days</option>
++                    </select>
++                    <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabActivityRefreshBtn">
++                        <i class="fa-solid fa-rotate"></i> Refresh
++                    </button>
++                    <span class="small text-muted ms-auto" id="vocabActivityMeta"></span>
++                </div>
++                <div id="vocabActivityLoading" class="text-muted small py-3">Loading…</div>
++                <div id="vocabActivityEmpty" class="text-muted small py-3 d-none">No Vocab Booster activity yet for this class.</div>
++                <div id="vocabActivityList" class="vocab-activity-list d-none"></div>
++            </div>
++        </div>
++    </div>
++</div>
++
+ <!-- Virtual Mr. Park Alerts & Monitor -->
+ <div class="modal fade app-modal" id="abuseAlertModal" tabindex="-1" aria-hidden="true">
+     <div class="modal-dialog modal-dialog-centered modal-xl modal-dialog-scrollable">
+@@ -8864,6 +8956,8 @@
+         document.getElementById('portalLoginsBtn').addEventListener('click', openPortalLoginsModal);
+         var vocabLmsBtn = document.getElementById('vocabLmsBtn');
+         if (vocabLmsBtn) vocabLmsBtn.addEventListener('click', openVocabLmsModal);
++        var vocabActivityBtn = document.getElementById('vocabActivityBtn');
++        if (vocabActivityBtn) vocabActivityBtn.addEventListener('click', openVocabActivityModal);
+         document.getElementById('openWithdrawnStudentsBtn').addEventListener('click', openWithdrawnStudentsModal);
+         const portalWithdrawnLink = document.getElementById('portalLoginsWithdrawnLink');
+         if (portalWithdrawnLink) {
+@@ -8928,6 +9022,7 @@
+         initStampBoardSidebarLauncher();
+         initAbuseAlertSidebarLauncher();
+         initVocabLmsModal();
++        initVocabActivityModal();
+         bindManageClassesUi();
+         bindStudentSchoolGradeUi();
+         document.getElementById('abuseAlertRefreshBtn').addEventListener('click', function() {
+@@ -16060,6 +16155,114 @@
+         resumeVocabGenJobIfAny();
+     }
+ 
++    function vocabActivityKindClass(kind) {
++        var k = String(kind || '');
++        if (k.indexOf('promote') !== -1) return 'is-promote';
++        if (k.indexOf('demote') !== -1) return 'is-demote';
++        if (k.indexOf('placement') !== -1) return 'is-place';
++        if (k.indexOf('vocab_set') !== -1 || k.indexOf('set') !== -1) return 'is-set';
++        return '';
++    }
++
++    function vocabActivityKindLabel(kind) {
++        var k = String(kind || 'event');
++        if (k === 'vocab_promote') return 'Promote';
++        if (k === 'vocab_demote') return 'Demote';
++        if (k === 'vocab_set') return 'Set';
++        if (k === 'vocab_placement') return 'Placement';
++        return k.replace(/^vocab_/, '').replace(/_/g, ' ');
++    }
++
++    function formatVocabActivityTime(iso) {
++        if (!iso) return '';
++        try {
++            var d = new Date(iso);
++            if (isNaN(d.getTime())) return String(iso).slice(0, 16);
++            return d.toLocaleString('en-CA', {
++                timeZone: 'Asia/Seoul',
++                month: 'short',
++                day: 'numeric',
++                hour: '2-digit',
++                minute: '2-digit',
++                hour12: false
++            });
++        } catch (e) {
++            return String(iso).slice(0, 16);
++        }
++    }
++
++    function openVocabActivityModal() {
++        if (!selectedClass) {
++            appAlert('Please select a class first.');
++            return;
++        }
++        document.getElementById('vocabActivityClassName').textContent = selectedClass.name;
++        var modalEl = document.getElementById('vocabActivityModal');
++        elevateAppDialogModal(modalEl);
++        bootstrap.Modal.getOrCreateInstance(modalEl).show();
++        refreshVocabActivityFeed();
++    }
++
++    function refreshVocabActivityFeed() {
++        if (!selectedClass) return;
++        var loading = document.getElementById('vocabActivityLoading');
++        var empty = document.getElementById('vocabActivityEmpty');
++        var list = document.getElementById('vocabActivityList');
++        var meta = document.getElementById('vocabActivityMeta');
++        var daysEl = document.getElementById('vocabActivityDays');
++        var days = Math.max(1, Number(daysEl && daysEl.value) || 7);
++        loading.classList.remove('d-none');
++        empty.classList.add('d-none');
++        list.classList.add('d-none');
++        list.innerHTML = '';
++        if (meta) meta.textContent = '';
++        var url = '/api/teacher/activity?classId=' + encodeURIComponent(selectedClass.id) +
++            '&days=' + encodeURIComponent(String(days));
++        nodeFetch(url)
++            .then(function(res) {
++                loading.classList.add('d-none');
++                var events = (res && res.events) || [];
++                if (meta) {
++                    meta.textContent = events.length
++                        ? events.length + ' event' + (events.length === 1 ? '' : 's')
++                        : '';
++                }
++                if (!events.length) {
++                    empty.classList.remove('d-none');
++                    return;
++                }
++                list.innerHTML = events.map(function(ev) {
++                    var kind = String(ev.kind || '');
++                    var name = ev.studentName || ev.studentId || 'Student';
++                    var title = ev.title || vocabActivityKindLabel(kind);
++                    var detail = ev.detail || '';
++                    return '<div class="vocab-activity-item">' +
++                        '<div class="vocab-activity-item-top">' +
++                        '<span class="vocab-activity-kind ' + vocabActivityKindClass(kind) + '">' +
++                        escapeHtml(vocabActivityKindLabel(kind)) + '</span>' +
++                        '<span class="vocab-activity-title">' + escapeHtml(name) +
++                        (title ? ' · ' + escapeHtml(title) : '') + '</span>' +
++                        '<span class="vocab-activity-time">' + escapeHtml(formatVocabActivityTime(ev.at)) + '</span>' +
++                        '</div>' +
++                        (detail ? '<div class="vocab-activity-detail">' + escapeHtml(detail) + '</div>' : '') +
++                        '</div>';
++                }).join('');
++                list.classList.remove('d-none');
++            })
++            .catch(function(err) {
++                loading.classList.add('d-none');
++                empty.classList.remove('d-none');
++                empty.textContent = err.message || 'Could not load activity.';
++            });
++    }
++
++    function initVocabActivityModal() {
++        var refreshBtn = document.getElementById('vocabActivityRefreshBtn');
++        if (refreshBtn) refreshBtn.addEventListener('click', refreshVocabActivityFeed);
++        var daysEl = document.getElementById('vocabActivityDays');
++        if (daysEl) daysEl.addEventListener('change', refreshVocabActivityFeed);
++    }
++
+     function setVocabLmsTab(tab) {
+         document.getElementById('vocabLmsTabOverviewBtn').classList.toggle('active', tab === 'overview');
+         document.getElementById('vocabLmsTabBankBtn').classList.toggle('active', tab === 'bank');
+diff --git a/server/public/Student.html b/server/public/Student.html
+index 8918eaf..c5a4a86 100644
+--- a/server/public/Student.html
++++ b/server/public/Student.html
+@@ -11,7 +11,7 @@
+     </script>
+     <script>
+         (function() {
+-            var PORTAL_BUILD = '2026-08-01.03';
++            var PORTAL_BUILD = '2026-08-01.04';
+             window.PORTAL_BUILD = PORTAL_BUILD;
+             var KEY = 'mrpark_portal_build';
+             try {
+@@ -2271,9 +2271,9 @@
+             .stamp-mark { width: 54px; height: 54px; margin-left: -27px; margin-top: -27px; }
+         }
+     </style>
+-<link rel="stylesheet" href="/css/vocab-learn.css?v=2026-08-01.03">
+-<script src="/js/vocab-mock-data.js?v=2026-08-01.03" defer></script>
+-<script src="/js/vocab-learn.js?v=2026-08-01.03" defer></script>
++<link rel="stylesheet" href="/css/vocab-learn.css?v=2026-08-01.04">
++<script src="/js/vocab-mock-data.js?v=2026-08-01.04" defer></script>
++<script src="/js/vocab-learn.js?v=2026-08-01.04" defer></script>
+ </head>
+ <body>
+ <div class="wrap">
+diff --git a/server/public/Teacher.html b/server/public/Teacher.html
+index 3f31740..6a29aad 100644
+--- a/server/public/Teacher.html
++++ b/server/public/Teacher.html
+@@ -49,7 +49,7 @@
+         // deploy; on mismatch we force exactly one hard reload (with a cache-busting
+         // query param) so the home-screen icon can never get stuck on stale UI.
+         (function() {
+-            var APP_BUILD = '2026-08-01.03';
++            var APP_BUILD = '2026-08-01.04';
+             window.MRPARK_BUILD = APP_BUILD;
+             var KEY = 'mrpark_app_build';
+             try {
+@@ -5439,6 +5439,62 @@
+         }
+         body.teacher-mobile .teacher-more-btn i { font-size: 1.25rem; margin: 0; }
+ 
++        .vocab-activity-list {
++            display: flex;
++            flex-direction: column;
++            gap: 0.65rem;
++        }
++        .vocab-activity-item {
++            border: 1px solid rgba(59, 158, 221, 0.18);
++            border-radius: 14px;
++            background: #f8fbfe;
++            padding: 0.75rem 0.9rem;
++        }
++        .vocab-activity-item-top {
++            display: flex;
++            flex-wrap: wrap;
++            align-items: baseline;
++            gap: 0.35rem 0.65rem;
++            margin-bottom: 0.25rem;
++        }
++        .vocab-activity-kind {
++            font-size: 0.72rem;
++            font-weight: 800;
++            letter-spacing: 0.02em;
++            text-transform: uppercase;
++            color: #2b6f97;
++            background: rgba(59, 158, 221, 0.12);
++            border-radius: 999px;
++            padding: 0.15rem 0.55rem;
++        }
++        .vocab-activity-kind.is-promote { color: #0f766e; background: rgba(16, 185, 129, 0.14); }
++        .vocab-activity-kind.is-demote { color: #b45309; background: rgba(245, 158, 11, 0.16); }
++        .vocab-activity-kind.is-set { color: #1d4ed8; background: rgba(59, 130, 246, 0.12); }
++        .vocab-activity-kind.is-place { color: #6d28d9; background: rgba(139, 92, 246, 0.14); }
++        .vocab-activity-time {
++            margin-left: auto;
++            font-size: 0.78rem;
++            color: #6b7c8a;
++            white-space: nowrap;
++        }
++        .vocab-activity-title {
++            font-weight: 700;
++            color: #163247;
++            font-size: 0.95rem;
++        }
++        .vocab-activity-detail {
++            font-size: 0.86rem;
++            color: #4b6170;
++            margin-top: 0.15rem;
++        }
++        [data-theme="dark"] .vocab-activity-item {
++            background: rgba(255, 255, 255, 0.04);
++            border-color: rgba(255, 255, 255, 0.1);
++        }
++        [data-theme="dark"] .vocab-activity-title { color: #e8f1f7; }
++        [data-theme="dark"] .vocab-activity-detail,
++        [data-theme="dark"] .vocab-activity-time { color: #9db0bd; }
++
+         /* ===== Student detail page (opened from roster / attendance card) ===== */
+         body.teacher-mobile #studentDetailSection .step-label,
+         body.teacher-mobile #studentDetailSection .step-label .step-num {
+@@ -6126,6 +6182,9 @@
+                 <button type="button" class="btn btn-sm btn-outline-info rounded-pill px-3" id="vocabLmsBtn">
+                     <i class="fa-solid fa-layer-group"></i> Vocab LMS
+                 </button>
++                <button type="button" class="btn btn-sm btn-outline-primary rounded-pill px-3" id="vocabActivityBtn">
++                    <i class="fa-solid fa-list-ul"></i> Vocab Activity
++                </button>
+                 <button type="button" class="btn btn-sm btn-warning rounded-pill px-3" id="openClassPendingBtn">
+                     <i class="fa-solid fa-hourglass-half"></i> Pending Homework
+                 </button>
+@@ -6350,6 +6409,8 @@
+             <button type="button" class="teacher-more-btn" data-trigger-click="openReportBtn"><i class="fa-solid fa-chart-line"></i> Monthly Report</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassLogBtn"><i class="fa-solid fa-book-open"></i> Class Log</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassPendingBtn"><i class="fa-solid fa-hourglass-half"></i> Pending HW</button>
++            <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-layer-group"></i> Vocab LMS</button>
++            <button type="button" class="teacher-more-btn" data-trigger-click="vocabActivityBtn"><i class="fa-solid fa-list-ul"></i> Vocab Activity</button>
+             <button type="button" class="teacher-more-btn" id="teacherMobileThemeBtn"><i class="fa-solid fa-moon"></i> Dark Mode</button>
+         </div>
+         <button type="button" class="btn btn-link btn-sm text-muted text-decoration-none px-0 mt-2 withdrawn-entry-link" data-trigger-click="openWithdrawnStudentsBtn">
+@@ -7083,6 +7144,37 @@
+     </div>
+ </div>
+ 
++<!-- Vocab Booster activity feed (promote / demote / set attempts) -->
++<div class="modal fade app-modal" id="vocabActivityModal" tabindex="-1" aria-hidden="true">
++    <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
++        <div class="modal-content">
++            <div class="modal-header">
++                <h5 class="modal-title"><i class="fa-solid fa-list-ul"></i> Vocab Activity — <span id="vocabActivityClassName">Class</span></h5>
++                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
++            </div>
++            <div class="modal-body">
++                <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
++                    <label class="small fw-semibold mb-0" for="vocabActivityDays">Show last</label>
++                    <select class="form-select form-select-sm" id="vocabActivityDays" style="width:auto;min-width:7rem;">
++                        <option value="1">1 day</option>
++                        <option value="3">3 days</option>
++                        <option value="7" selected>7 days</option>
++                        <option value="14">14 days</option>
++                        <option value="30">30 days</option>
++                    </select>
++                    <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabActivityRefreshBtn">
++                        <i class="fa-solid fa-rotate"></i> Refresh
++                    </button>
++                    <span class="small text-muted ms-auto" id="vocabActivityMeta"></span>
++                </div>
++                <div id="vocabActivityLoading" class="text-muted small py-3">Loading…</div>
++                <div id="vocabActivityEmpty" class="text-muted small py-3 d-none">No Vocab Booster activity yet for this class.</div>
++                <div id="vocabActivityList" class="vocab-activity-list d-none"></div>
++            </div>
++        </div>
++    </div>
++</div>
++
+ <!-- Virtual Mr. Park Alerts & Monitor -->
+ <div class="modal fade app-modal" id="abuseAlertModal" tabindex="-1" aria-hidden="true">
+     <div class="modal-dialog modal-dialog-centered modal-xl modal-dialog-scrollable">
+@@ -9004,6 +9096,8 @@
+         document.getElementById('portalLoginsBtn').addEventListener('click', openPortalLoginsModal);
+         var vocabLmsBtn = document.getElementById('vocabLmsBtn');
+         if (vocabLmsBtn) vocabLmsBtn.addEventListener('click', openVocabLmsModal);
++        var vocabActivityBtn = document.getElementById('vocabActivityBtn');
++        if (vocabActivityBtn) vocabActivityBtn.addEventListener('click', openVocabActivityModal);
+         document.getElementById('openWithdrawnStudentsBtn').addEventListener('click', openWithdrawnStudentsModal);
+         const portalWithdrawnLink = document.getElementById('portalLoginsWithdrawnLink');
+         if (portalWithdrawnLink) {
+@@ -9068,6 +9162,7 @@
+         initStampBoardSidebarLauncher();
+         initAbuseAlertSidebarLauncher();
+         initVocabLmsModal();
++        initVocabActivityModal();
+         bindManageClassesUi();
+         bindStudentSchoolGradeUi();
+         document.getElementById('abuseAlertRefreshBtn').addEventListener('click', function() {
+@@ -16200,6 +16295,114 @@
+         resumeVocabGenJobIfAny();
+     }
+ 
++    function vocabActivityKindClass(kind) {
++        var k = String(kind || '');
++        if (k.indexOf('promote') !== -1) return 'is-promote';
++        if (k.indexOf('demote') !== -1) return 'is-demote';
++        if (k.indexOf('placement') !== -1) return 'is-place';
++        if (k.indexOf('vocab_set') !== -1 || k.indexOf('set') !== -1) return 'is-set';
++        return '';
++    }
++
++    function vocabActivityKindLabel(kind) {
++        var k = String(kind || 'event');
++        if (k === 'vocab_promote') return 'Promote';
++        if (k === 'vocab_demote') return 'Demote';
++        if (k === 'vocab_set') return 'Set';
++        if (k === 'vocab_placement') return 'Placement';
++        return k.replace(/^vocab_/, '').replace(/_/g, ' ');
++    }
++
++    function formatVocabActivityTime(iso) {
++        if (!iso) return '';
++        try {
++            var d = new Date(iso);
++            if (isNaN(d.getTime())) return String(iso).slice(0, 16);
++            return d.toLocaleString('en-CA', {
++                timeZone: 'Asia/Seoul',
++                month: 'short',
++                day: 'numeric',
++                hour: '2-digit',
++                minute: '2-digit',
++                hour12: false
++            });
++        } catch (e) {
++            return String(iso).slice(0, 16);
++        }
++    }
++
++    function openVocabActivityModal() {
++        if (!selectedClass) {
++            appAlert('Please select a class first.');
++            return;
++        }
++        document.getElementById('vocabActivityClassName').textContent = selectedClass.name;
++        var modalEl = document.getElementById('vocabActivityModal');
++        elevateAppDialogModal(modalEl);
++        bootstrap.Modal.getOrCreateInstance(modalEl).show();
++        refreshVocabActivityFeed();
++    }
++
++    function refreshVocabActivityFeed() {
++        if (!selectedClass) return;
++        var loading = document.getElementById('vocabActivityLoading');
++        var empty = document.getElementById('vocabActivityEmpty');
++        var list = document.getElementById('vocabActivityList');
++        var meta = document.getElementById('vocabActivityMeta');
++        var daysEl = document.getElementById('vocabActivityDays');
++        var days = Math.max(1, Number(daysEl && daysEl.value) || 7);
++        loading.classList.remove('d-none');
++        empty.classList.add('d-none');
++        list.classList.add('d-none');
++        list.innerHTML = '';
++        if (meta) meta.textContent = '';
++        var url = '/api/teacher/activity?classId=' + encodeURIComponent(selectedClass.id) +
++            '&days=' + encodeURIComponent(String(days));
++        nodeFetch(url)
++            .then(function(res) {
++                loading.classList.add('d-none');
++                var events = (res && res.events) || [];
++                if (meta) {
++                    meta.textContent = events.length
++                        ? events.length + ' event' + (events.length === 1 ? '' : 's')
++                        : '';
++                }
++                if (!events.length) {
++                    empty.classList.remove('d-none');
++                    return;
++                }
++                list.innerHTML = events.map(function(ev) {
++                    var kind = String(ev.kind || '');
++                    var name = ev.studentName || ev.studentId || 'Student';
++                    var title = ev.title || vocabActivityKindLabel(kind);
++                    var detail = ev.detail || '';
++                    return '<div class="vocab-activity-item">' +
++                        '<div class="vocab-activity-item-top">' +
++                        '<span class="vocab-activity-kind ' + vocabActivityKindClass(kind) + '">' +
++                        escapeHtml(vocabActivityKindLabel(kind)) + '</span>' +
++                        '<span class="vocab-activity-title">' + escapeHtml(name) +
++                        (title ? ' · ' + escapeHtml(title) : '') + '</span>' +
++                        '<span class="vocab-activity-time">' + escapeHtml(formatVocabActivityTime(ev.at)) + '</span>' +
++                        '</div>' +
++                        (detail ? '<div class="vocab-activity-detail">' + escapeHtml(detail) + '</div>' : '') +
++                        '</div>';
++                }).join('');
++                list.classList.remove('d-none');
++            })
++            .catch(function(err) {
++                loading.classList.add('d-none');
++                empty.classList.remove('d-none');
++                empty.textContent = err.message || 'Could not load activity.';
++            });
++    }
++
++    function initVocabActivityModal() {
++        var refreshBtn = document.getElementById('vocabActivityRefreshBtn');
++        if (refreshBtn) refreshBtn.addEventListener('click', refreshVocabActivityFeed);
++        var daysEl = document.getElementById('vocabActivityDays');
++        if (daysEl) daysEl.addEventListener('change', refreshVocabActivityFeed);
++    }
++
+     function setVocabLmsTab(tab) {
+         document.getElementById('vocabLmsTabOverviewBtn').classList.toggle('active', tab === 'overview');
+         document.getElementById('vocabLmsTabBankBtn').classList.toggle('active', tab === 'bank');
+diff --git a/server/public/sw.js b/server/public/sw.js
+index cd2c709..c208aa2 100644
+--- a/server/public/sw.js
++++ b/server/public/sw.js
+@@ -1,4 +1,4 @@
+-const CACHE = 'mrpark-shell-2026-08-01.03';
++const CACHE = 'mrpark-shell-2026-08-01.04';
+ const SHELL = [
+   '/',
+   '/offline.html',
+diff --git a/server/scripts/build-public.js b/server/scripts/build-public.js
+index 0941eee..fa524cf 100644
+--- a/server/scripts/build-public.js
++++ b/server/scripts/build-public.js
+@@ -7,7 +7,7 @@
+ const fs = require('fs');
+ const path = require('path');
+ 
+-const PORTAL_BUILD = '2026-08-01.03';
++const PORTAL_BUILD = '2026-08-01.04';
+ 
+ const serverDir = path.join(__dirname, '..');
+ const repoRoot = path.join(serverDir, '..');
+diff --git a/server/src/routes.js b/server/src/routes.js
+index 897355c..d615f91 100644
+--- a/server/src/routes.js
++++ b/server/src/routes.js
+@@ -227,7 +227,7 @@ router.get('/health', (req, res) => {
+   res.json({
+     ok: true,
+     service: 'mrpark-class-api',
+-    portalBuild: '2026-08-01.03',
++    portalBuild: '2026-08-01.04',
+     pwaEnabled: true,
+     phase: 5,
+     supabase: isSupabaseEnabled(),
+diff --git a/server/teacher-src/Index.html b/server/teacher-src/Index.html
+index 1e94b76..56ac61a 100644
+--- a/server/teacher-src/Index.html
++++ b/server/teacher-src/Index.html
+@@ -5293,6 +5293,62 @@
+         }
+         body.teacher-mobile .teacher-more-btn i { font-size: 1.25rem; margin: 0; }
+ 
++        .vocab-activity-list {
++            display: flex;
++            flex-direction: column;
++            gap: 0.65rem;
++        }
++        .vocab-activity-item {
++            border: 1px solid rgba(59, 158, 221, 0.18);
++            border-radius: 14px;
++            background: #f8fbfe;
++            padding: 0.75rem 0.9rem;
++        }
++        .vocab-activity-item-top {
++            display: flex;
++            flex-wrap: wrap;
++            align-items: baseline;
++            gap: 0.35rem 0.65rem;
++            margin-bottom: 0.25rem;
++        }
++        .vocab-activity-kind {
++            font-size: 0.72rem;
++            font-weight: 800;
++            letter-spacing: 0.02em;
++            text-transform: uppercase;
++            color: #2b6f97;
++            background: rgba(59, 158, 221, 0.12);
++            border-radius: 999px;
++            padding: 0.15rem 0.55rem;
++        }
++        .vocab-activity-kind.is-promote { color: #0f766e; background: rgba(16, 185, 129, 0.14); }
++        .vocab-activity-kind.is-demote { color: #b45309; background: rgba(245, 158, 11, 0.16); }
++        .vocab-activity-kind.is-set { color: #1d4ed8; background: rgba(59, 130, 246, 0.12); }
++        .vocab-activity-kind.is-place { color: #6d28d9; background: rgba(139, 92, 246, 0.14); }
++        .vocab-activity-time {
++            margin-left: auto;
++            font-size: 0.78rem;
++            color: #6b7c8a;
++            white-space: nowrap;
++        }
++        .vocab-activity-title {
++            font-weight: 700;
++            color: #163247;
++            font-size: 0.95rem;
++        }
++        .vocab-activity-detail {
++            font-size: 0.86rem;
++            color: #4b6170;
++            margin-top: 0.15rem;
++        }
++        [data-theme="dark"] .vocab-activity-item {
++            background: rgba(255, 255, 255, 0.04);
++            border-color: rgba(255, 255, 255, 0.1);
++        }
++        [data-theme="dark"] .vocab-activity-title { color: #e8f1f7; }
++        [data-theme="dark"] .vocab-activity-detail,
++        [data-theme="dark"] .vocab-activity-time { color: #9db0bd; }
++
+         /* ===== Student detail page (opened from roster / attendance card) ===== */
+         body.teacher-mobile #studentDetailSection .step-label,
+         body.teacher-mobile #studentDetailSection .step-label .step-num {
+@@ -5980,6 +6036,9 @@
+                 <button type="button" class="btn btn-sm btn-outline-info rounded-pill px-3" id="vocabLmsBtn">
+                     <i class="fa-solid fa-layer-group"></i> Vocab LMS
+                 </button>
++                <button type="button" class="btn btn-sm btn-outline-primary rounded-pill px-3" id="vocabActivityBtn">
++                    <i class="fa-solid fa-list-ul"></i> Vocab Activity
++                </button>
+                 <button type="button" class="btn btn-sm btn-warning rounded-pill px-3" id="openClassPendingBtn">
+                     <i class="fa-solid fa-hourglass-half"></i> Pending Homework
+                 </button>
+@@ -6204,6 +6263,8 @@
+             <button type="button" class="teacher-more-btn" data-trigger-click="openReportBtn"><i class="fa-solid fa-chart-line"></i> Monthly Report</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassLogBtn"><i class="fa-solid fa-book-open"></i> Class Log</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassPendingBtn"><i class="fa-solid fa-hourglass-half"></i> Pending HW</button>
++            <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-layer-group"></i> Vocab LMS</button>
++            <button type="button" class="teacher-more-btn" data-trigger-click="vocabActivityBtn"><i class="fa-solid fa-list-ul"></i> Vocab Activity</button>
+             <button type="button" class="teacher-more-btn" id="teacherMobileThemeBtn"><i class="fa-solid fa-moon"></i> Dark Mode</button>
+         </div>
+         <button type="button" class="btn btn-link btn-sm text-muted text-decoration-none px-0 mt-2 withdrawn-entry-link" data-trigger-click="openWithdrawnStudentsBtn">
+@@ -6937,6 +6998,37 @@
+     </div>
+ </div>
+ 
++<!-- Vocab Booster activity feed (promote / demote / set attempts) -->
++<div class="modal fade app-modal" id="vocabActivityModal" tabindex="-1" aria-hidden="true">
++    <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
++        <div class="modal-content">
++            <div class="modal-header">
++                <h5 class="modal-title"><i class="fa-solid fa-list-ul"></i> Vocab Activity — <span id="vocabActivityClassName">Class</span></h5>
++                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
++            </div>
++            <div class="modal-body">
++                <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
++                    <label class="small fw-semibold mb-0" for="vocabActivityDays">Show last</label>
++                    <select class="form-select form-select-sm" id="vocabActivityDays" style="width:auto;min-width:7rem;">
++                        <option value="1">1 day</option>
++                        <option value="3">3 days</option>
++                        <option value="7" selected>7 days</option>
++                        <option value="14">14 days</option>
++                        <option value="30">30 days</option>
++                    </select>
++                    <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabActivityRefreshBtn">
++                        <i class="fa-solid fa-rotate"></i> Refresh
++                    </button>
++                    <span class="small text-muted ms-auto" id="vocabActivityMeta"></span>
++                </div>
++                <div id="vocabActivityLoading" class="text-muted small py-3">Loading…</div>
++                <div id="vocabActivityEmpty" class="text-muted small py-3 d-none">No Vocab Booster activity yet for this class.</div>
++                <div id="vocabActivityList" class="vocab-activity-list d-none"></div>
++            </div>
++        </div>
++    </div>
++</div>
++
+ <!-- Virtual Mr. Park Alerts & Monitor -->
+ <div class="modal fade app-modal" id="abuseAlertModal" tabindex="-1" aria-hidden="true">
+     <div class="modal-dialog modal-dialog-centered modal-xl modal-dialog-scrollable">
+@@ -8864,6 +8956,8 @@
+         document.getElementById('portalLoginsBtn').addEventListener('click', openPortalLoginsModal);
+         var vocabLmsBtn = document.getElementById('vocabLmsBtn');
+         if (vocabLmsBtn) vocabLmsBtn.addEventListener('click', openVocabLmsModal);
++        var vocabActivityBtn = document.getElementById('vocabActivityBtn');
++        if (vocabActivityBtn) vocabActivityBtn.addEventListener('click', openVocabActivityModal);
+         document.getElementById('openWithdrawnStudentsBtn').addEventListener('click', openWithdrawnStudentsModal);
+         const portalWithdrawnLink = document.getElementById('portalLoginsWithdrawnLink');
+         if (portalWithdrawnLink) {
+@@ -8928,6 +9022,7 @@
+         initStampBoardSidebarLauncher();
+         initAbuseAlertSidebarLauncher();
+         initVocabLmsModal();
++        initVocabActivityModal();
+         bindManageClassesUi();
+         bindStudentSchoolGradeUi();
+         document.getElementById('abuseAlertRefreshBtn').addEventListener('click', function() {
+@@ -16060,6 +16155,114 @@
+         resumeVocabGenJobIfAny();
+     }
+ 
++    function vocabActivityKindClass(kind) {
++        var k = String(kind || '');
++        if (k.indexOf('promote') !== -1) return 'is-promote';
++        if (k.indexOf('demote') !== -1) return 'is-demote';
++        if (k.indexOf('placement') !== -1) return 'is-place';
++        if (k.indexOf('vocab_set') !== -1 || k.indexOf('set') !== -1) return 'is-set';
++        return '';
++    }
++
++    function vocabActivityKindLabel(kind) {
++        var k = String(kind || 'event');
++        if (k === 'vocab_promote') return 'Promote';
++        if (k === 'vocab_demote') return 'Demote';
++        if (k === 'vocab_set') return 'Set';
++        if (k === 'vocab_placement') return 'Placement';
++        return k.replace(/^vocab_/, '').replace(/_/g, ' ');
++    }
++
++    function formatVocabActivityTime(iso) {
++        if (!iso) return '';
++        try {
++            var d = new Date(iso);
++            if (isNaN(d.getTime())) return String(iso).slice(0, 16);
++            return d.toLocaleString('en-CA', {
++                timeZone: 'Asia/Seoul',
++                month: 'short',
++                day: 'numeric',
++                hour: '2-digit',
++                minute: '2-digit',
++                hour12: false
++            });
++        } catch (e) {
++            return String(iso).slice(0, 16);
++        }
++    }
++
++    function openVocabActivityModal() {
++        if (!selectedClass) {
++            appAlert('Please select a class first.');
++            return;
++        }
++        document.getElementById('vocabActivityClassName').textContent = selectedClass.name;
++        var modalEl = document.getElementById('vocabActivityModal');
++        elevateAppDialogModal(modalEl);
++        bootstrap.Modal.getOrCreateInstance(modalEl).show();
++        refreshVocabActivityFeed();
++    }
++
++    function refreshVocabActivityFeed() {
++        if (!selectedClass) return;
++        var loading = document.getElementById('vocabActivityLoading');
++        var empty = document.getElementById('vocabActivityEmpty');
++        var list = document.getElementById('vocabActivityList');
++        var meta = document.getElementById('vocabActivityMeta');
++        var daysEl = document.getElementById('vocabActivityDays');
++        var days = Math.max(1, Number(daysEl && daysEl.value) || 7);
++        loading.classList.remove('d-none');
++        empty.classList.add('d-none');
++        list.classList.add('d-none');
++        list.innerHTML = '';
++        if (meta) meta.textContent = '';
++        var url = '/api/teacher/activity?classId=' + encodeURIComponent(selectedClass.id) +
++            '&days=' + encodeURIComponent(String(days));
++        nodeFetch(url)
++            .then(function(res) {
++                loading.classList.add('d-none');
++                var events = (res && res.events) || [];
++                if (meta) {
++                    meta.textContent = events.length
++                        ? events.length + ' event' + (events.length === 1 ? '' : 's')
++                        : '';
++                }
++                if (!events.length) {
++                    empty.classList.remove('d-none');
++                    return;
++                }
++                list.innerHTML = events.map(function(ev) {
++                    var kind = String(ev.kind || '');
++                    var name = ev.studentName || ev.studentId || 'Student';
++                    var title = ev.title || vocabActivityKindLabel(kind);
++                    var detail = ev.detail || '';
++                    return '<div class="vocab-activity-item">' +
++                        '<div class="vocab-activity-item-top">' +
++                        '<span class="vocab-activity-kind ' + vocabActivityKindClass(kind) + '">' +
++                        escapeHtml(vocabActivityKindLabel(kind)) + '</span>' +
++                        '<span class="vocab-activity-title">' + escapeHtml(name) +
++                        (title ? ' · ' + escapeHtml(title) : '') + '</span>' +
++                        '<span class="vocab-activity-time">' + escapeHtml(formatVocabActivityTime(ev.at)) + '</span>' +
++                        '</div>' +
++                        (detail ? '<div class="vocab-activity-detail">' + escapeHtml(detail) + '</div>' : '') +
++                        '</div>';
++                }).join('');
++                list.classList.remove('d-none');
++            })
++            .catch(function(err) {
++                loading.classList.add('d-none');
++                empty.classList.remove('d-none');
++                empty.textContent = err.message || 'Could not load activity.';
++            });
++    }
++
++    function initVocabActivityModal() {
++        var refreshBtn = document.getElementById('vocabActivityRefreshBtn');
++        if (refreshBtn) refreshBtn.addEventListener('click', refreshVocabActivityFeed);
++        var daysEl = document.getElementById('vocabActivityDays');
++        if (daysEl) daysEl.addEventListener('change', refreshVocabActivityFeed);
++    }
++
+     function setVocabLmsTab(tab) {
+         document.getElementById('vocabLmsTabOverviewBtn').classList.toggle('active', tab === 'overview');
+         document.getElementById('vocabLmsTabBankBtn').classList.toggle('active', tab === 'bank');
+-- 
+2.43.0
+
