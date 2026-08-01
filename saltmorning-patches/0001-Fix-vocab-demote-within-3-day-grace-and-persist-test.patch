@@ -1,7 +1,7 @@
 From 13801aee2ded2fff54677c2cbdc38496438fde6b Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Sat, 1 Aug 2026 03:36:57 +0000
-Subject: [PATCH] Fix vocab demote within 3-day grace and persist test
+Subject: [PATCH 1/2] Fix vocab demote within 3-day grace and persist test
  attempts.
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1833,6 +1833,85 @@ index 0000000..63bd05c
 +  ON vocab_activity_events (student_id, at DESC);
 +
 +ALTER TABLE vocab_activity_events ENABLE ROW LEVEL SECURITY;
+-- 
+2.43.0
+
+
+From 5984b024eeb9ca5936f6dcd22af95553561ee84a Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sat, 1 Aug 2026 08:03:51 +0000
+Subject: [PATCH 2/2] Bump portal build to 2026-08-01.01 for Railway deploy
+ verification.
+
+---
+ server/public/Student.html | 8 ++++----
+ server/public/Teacher.html | 2 +-
+ server/public/sw.js        | 2 +-
+ server/src/routes.js       | 2 +-
+ 4 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/server/public/Student.html b/server/public/Student.html
+index dea780b..175a21b 100644
+--- a/server/public/Student.html
++++ b/server/public/Student.html
+@@ -11,7 +11,7 @@
+     </script>
+     <script>
+         (function() {
+-            var PORTAL_BUILD = '2026-07-31.08';
++            var PORTAL_BUILD = '2026-08-01.01';
+             window.PORTAL_BUILD = PORTAL_BUILD;
+             var KEY = 'mrpark_portal_build';
+             try {
+@@ -2271,9 +2271,9 @@
+             .stamp-mark { width: 54px; height: 54px; margin-left: -27px; margin-top: -27px; }
+         }
+     </style>
+-<link rel="stylesheet" href="/css/vocab-learn.css?v=2026-07-31.08">
+-<script src="/js/vocab-mock-data.js?v=2026-07-31.08" defer></script>
+-<script src="/js/vocab-learn.js?v=2026-07-31.08" defer></script>
++<link rel="stylesheet" href="/css/vocab-learn.css?v=2026-08-01.01">
++<script src="/js/vocab-mock-data.js?v=2026-08-01.01" defer></script>
++<script src="/js/vocab-learn.js?v=2026-08-01.01" defer></script>
+ </head>
+ <body>
+ <div class="wrap">
+diff --git a/server/public/Teacher.html b/server/public/Teacher.html
+index c0470c7..0829267 100644
+--- a/server/public/Teacher.html
++++ b/server/public/Teacher.html
+@@ -49,7 +49,7 @@
+         // deploy; on mismatch we force exactly one hard reload (with a cache-busting
+         // query param) so the home-screen icon can never get stuck on stale UI.
+         (function() {
+-            var APP_BUILD = '2026-07-31.08';
++            var APP_BUILD = '2026-08-01.01';
+             window.MRPARK_BUILD = APP_BUILD;
+             var KEY = 'mrpark_app_build';
+             try {
+diff --git a/server/public/sw.js b/server/public/sw.js
+index c14a310..6da436e 100644
+--- a/server/public/sw.js
++++ b/server/public/sw.js
+@@ -1,4 +1,4 @@
+-const CACHE = 'mrpark-shell-2026-07-31.08';
++const CACHE = 'mrpark-shell-2026-08-01.01';
+ const SHELL = [
+   '/',
+   '/offline.html',
+diff --git a/server/src/routes.js b/server/src/routes.js
+index 12d3f80..5bccbad 100644
+--- a/server/src/routes.js
++++ b/server/src/routes.js
+@@ -227,7 +227,7 @@ router.get('/health', (req, res) => {
+   res.json({
+     ok: true,
+     service: 'mrpark-class-api',
+-    portalBuild: '2026-07-09.22',
++    portalBuild: '2026-08-01.01',
+     pwaEnabled: true,
+     phase: 5,
+     supabase: isSupabaseEnabled(),
 -- 
 2.43.0
 
