@@ -3,8 +3,8 @@
 This agent cannot push to `iancentralpark/saltmorning` (403). Code was deployed to Railway via CLI from the local fix tree.
 
 ## Deploy status (2026-08-01)
-- **Railway (`mrpark.online`)**: deployed — live `/api/health` shows `portalBuild: "2026-08-01.01"`.
-- **Supabase migration `019_vocab_promotion_ladder.sql`**: **not applied yet** (needs SQL Editor or `SUPABASE_DB_URL`). Without it, `shield_count` / `test_attempt_log` / `vocab_activity_events` writes can fail.
+- **Railway (`mrpark.online`)**: deployed — live `/api/health` shows `portalBuild: "2026-08-01.02"`.
+- **No new Supabase migration required**: live schema already has `promotion_shield_count`, `last_active_at`, `last_decay_date`, and `student_activity_log`. Code was aligned to those names (019 patch is optional/legacy).
 
 ## What was wrong
 1. **Arthur** demoted after **1 idle day** — inactivity decay ignored the **3-day grace**.
@@ -16,11 +16,6 @@ This agent cannot push to `iancentralpark/saltmorning` (403). Code was deployed 
 - Jei → **Emerald (G7)** (placement kept)
 - Arthur → **Silver (G4)** (placement kept)
 - Note: override reset their promotion scores to **0** (prod override behavior).
-
-## Remaining: run migration 019
-Open Supabase SQL Editor for project `tedzjzntesjslpiefbbi` and run `server/supabase/migrations/019_vocab_promotion_ladder.sql` (safe to re-run).
-
-Or set `SUPABASE_DB_URL` / `DATABASE_URL` and apply with `psql` / a small node `pg` script.
 
 ## Apply patch (if syncing GitHub `saltmorning`)
 ```bash

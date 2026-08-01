@@ -1,7 +1,7 @@
 From 13801aee2ded2fff54677c2cbdc38496438fde6b Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Sat, 1 Aug 2026 03:36:57 +0000
-Subject: [PATCH 1/2] Fix vocab demote within 3-day grace and persist test
+Subject: [PATCH 1/3] Fix vocab demote within 3-day grace and persist test
  attempts.
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -1840,7 +1840,7 @@ index 0000000..63bd05c
 From 5984b024eeb9ca5936f6dcd22af95553561ee84a Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Sat, 1 Aug 2026 08:03:51 +0000
-Subject: [PATCH 2/2] Bump portal build to 2026-08-01.01 for Railway deploy
+Subject: [PATCH 2/3] Bump portal build to 2026-08-01.01 for Railway deploy
  verification.
 
 ---
@@ -1912,6 +1912,444 @@ index 12d3f80..5bccbad 100644
      pwaEnabled: true,
      phase: 5,
      supabase: isSupabaseEnabled(),
+-- 
+2.43.0
+
+
+From 20e4d0cd4f124985d10dafbc72fa95233644c943 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sat, 1 Aug 2026 08:28:13 +0000
+Subject: [PATCH 3/3] Align vocab fix with live Supabase schema (no new
+ migration).
+
+Use promotion_shield_count, student_activity_log, and last_decay_date
+instead of columns/tables that do not exist in production.
+---
+ server/scripts/build-public.js         |  2 +-
+ server/scripts/test-vocab-promotion.js | 25 ++++++++++
+ server/src/routes.js                   |  2 +-
+ server/src/vocabActivityService.js     | 20 +++++---
+ server/src/vocabLearningService.js     | 67 ++++++++++++++++++++------
+ server/src/vocabPromotionService.js    | 63 +++++++++++++++++-------
+ 6 files changed, 138 insertions(+), 41 deletions(-)
+
+diff --git a/server/scripts/build-public.js b/server/scripts/build-public.js
+index 2596d3a..dec8406 100644
+--- a/server/scripts/build-public.js
++++ b/server/scripts/build-public.js
+@@ -7,7 +7,7 @@
+ const fs = require('fs');
+ const path = require('path');
+ 
+-const PORTAL_BUILD = '2026-08-01.01';
++const PORTAL_BUILD = '2026-08-01.02';
+ 
+ const serverDir = path.join(__dirname, '..');
+ const repoRoot = path.join(serverDir, '..');
+diff --git a/server/scripts/test-vocab-promotion.js b/server/scripts/test-vocab-promotion.js
+index 3595a35..6190a80 100644
+--- a/server/scripts/test-vocab-promotion.js
++++ b/server/scripts/test-vocab-promotion.js
+@@ -110,4 +110,29 @@ check('day 4 idle can decay points', function () {
+   assert.strictEqual(r.promotionScore, 100 - 15); // 1 penalized day
+ });
+ 
++check('same-day re-login does not re-apply decay', function () {
++  const r = applyInactivityDecay(
++    {
++      grade_level: 4,
++      promotion_score: 85,
++      promotion_shield_count: 0,
++      last_completed_date: '2026-07-28',
++      last_decay_date: '2026-08-01'
++    },
++    '2026-08-01'
++  );
++  assert.strictEqual(r.changed, false);
++  assert.strictEqual(r.promotionScore, 85);
++});
++
++check('reads promotion_shield_count from live schema', function () {
++  const r = applyAttemptToLadder(
++    { grade_level: 7, promotion_score: 10, promotion_shield_count: 20 },
++    0,
++    10
++  );
++  assert.strictEqual(r.demoted, null);
++  assert.ok(r.shieldCount < 20);
++});
++
+ if (!process.exitCode) console.log('\nAll vocab promotion checks passed.');
+diff --git a/server/src/routes.js b/server/src/routes.js
+index 5bccbad..a763f9c 100644
+--- a/server/src/routes.js
++++ b/server/src/routes.js
+@@ -227,7 +227,7 @@ router.get('/health', (req, res) => {
+   res.json({
+     ok: true,
+     service: 'mrpark-class-api',
+-    portalBuild: '2026-08-01.01',
++    portalBuild: '2026-08-01.02',
+     pwaEnabled: true,
+     phase: 5,
+     supabase: isSupabaseEnabled(),
+diff --git a/server/src/vocabActivityService.js b/server/src/vocabActivityService.js
+index df4a254..887853b 100644
+--- a/server/src/vocabActivityService.js
++++ b/server/src/vocabActivityService.js
+@@ -1,8 +1,11 @@
+ /**
+  * Append-only Vocab / portal activity events for the teacher Activity feed.
++ * Live table: student_activity_log (created_at, not "at").
+  */
+ const { isSupabaseEnabled, getSupabase } = require('./supabaseClient');
+ 
++const ACTIVITY_TABLE = 'student_activity_log';
++
+ function newEventId(kind) {
+   return (
+     'ACT_' +
+@@ -19,17 +22,17 @@ async function logVocabActivity(evt) {
+   const db = getSupabase();
+   const row = {
+     id: evt.id || newEventId(evt.kind),
+-    at: evt.at || new Date().toISOString(),
++    created_at: evt.at || evt.createdAt || new Date().toISOString(),
+     class_id: evt.classId ? String(evt.classId) : null,
+     student_id: String(evt.studentId || ''),
+-    student_name: evt.studentName ? String(evt.studentName) : null,
++    student_name: evt.studentName ? String(evt.studentName) : '',
+     kind: String(evt.kind || 'event'),
+     title: String(evt.title || ''),
+     detail: String(evt.detail || ''),
+     meta: evt.meta && typeof evt.meta === 'object' ? evt.meta : {}
+   };
+   if (!row.student_id) return null;
+-  const { error } = await db.from('vocab_activity_events').insert(row);
++  const { error } = await db.from(ACTIVITY_TABLE).insert(row);
+   if (error) {
+     console.warn('logVocabActivity', error.message || error);
+     return null;
+@@ -44,18 +47,20 @@ async function listActivityEvents(opts) {
+   const days = Math.max(1, Math.min(60, Number(opts.days) || 7));
+   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+   let q = db
+-    .from('vocab_activity_events')
++    .from(ACTIVITY_TABLE)
+     .select('*')
+-    .gte('at', since)
+-    .order('at', { ascending: false })
++    .gte('created_at', since)
++    .order('created_at', { ascending: false })
+     .limit(Math.max(1, Math.min(500, Number(opts.limit) || 200)));
+   if (opts.classId) q = q.eq('class_id', String(opts.classId));
++  if (opts.studentId) q = q.eq('student_id', String(opts.studentId));
++  if (opts.kind) q = q.eq('kind', String(opts.kind));
+   const { data, error } = await q;
+   if (error) throw new Error(error.message);
+   const events = (data || []).map(function (r) {
+     return {
+       id: r.id,
+-      at: r.at,
++      at: r.created_at,
+       classId: r.class_id,
+       studentId: r.student_id,
+       studentName: r.student_name,
+@@ -69,6 +74,7 @@ async function listActivityEvents(opts) {
+ }
+ 
+ module.exports = {
++  ACTIVITY_TABLE,
+   logVocabActivity,
+   listActivityEvents,
+   newEventId
+diff --git a/server/src/vocabLearningService.js b/server/src/vocabLearningService.js
+index 0626e5e..87c0538 100644
+--- a/server/src/vocabLearningService.js
++++ b/server/src/vocabLearningService.js
+@@ -14,9 +14,10 @@ const {
+   todaySeoul,
+   applyAttemptToLadder,
+   applyInactivityDecay,
+-  clampScore
++  clampScore,
++  shieldFromState
+ } = require('./vocabPromotionService');
+-const { logVocabActivity } = require('./vocabActivityService');
++const { logVocabActivity, listActivityEvents } = require('./vocabActivityService');
+ 
+ const DEFAULT_DAILY_TARGET = 10;
+ const DEFAULT_PASS_THRESHOLD = 100;
+@@ -84,8 +85,8 @@ async function syncInactivityDecay(studentId, state) {
+     grade_level: decay.gradeLevel,
+     tier_name: decay.tierName,
+     promotion_score: decay.promotionScore,
+-    shield_count: decay.shieldCount,
+-    last_active_at: new Date().toISOString(),
++    promotion_shield_count: decay.shieldCount,
++    last_decay_date: decay.lastDecayDate || todaySeoul(),
+     updated_at: new Date().toISOString()
+   };
+   const { error } = await db.from('vocab_student_state').upsert(row, { onConflict: 'student_id' });
+@@ -470,10 +471,12 @@ async function savePlacementResult(studentId, classId, result) {
+     tier_name: tierName,
+     rating_score: RATING_START,
+     promotion_score: 0,
+-    shield_count: 0,
++    promotion_shield_count: 0,
++    last_decay_date: null,
+     placement_accuracy: result.accuracy,
+     placement_at: new Date().toISOString(),
+     last_active_at: new Date().toISOString(),
++    last_completed_date: null,
+     updated_at: new Date().toISOString()
+   };
+   const { error } = await db.from('vocab_student_state').upsert(row, { onConflict: 'student_id' });
+@@ -885,14 +888,12 @@ async function recordDailyTestResult(studentId, classId, correctCount, totalCoun
+     gradeLevel: ladder.gradeLevel,
+     tierName: ladder.tierName
+   };
+-  const prevLog = Array.isArray(daily.test_attempt_log) ? daily.test_attempt_log : [];
+-  const attemptLog = prevLog.concat([attemptEntry]).slice(-50);
++  // Attempt history lives in student_activity_log (no test_attempt_log column on live DB).
+ 
+   const update = {
+     test_attempts: (daily.test_attempts || 0) + 1,
+     test_score: score,
+     test_passed: !!daily.test_passed || passed,
+-    test_attempt_log: attemptLog,
+     updated_at: new Date().toISOString()
+   };
+ 
+@@ -907,7 +908,7 @@ async function recordDailyTestResult(studentId, classId, correctCount, totalCoun
+     grade_level: ladder.gradeLevel,
+     tier_name: ladder.tierName,
+     promotion_score: ladder.promotionScore,
+-    shield_count: ladder.shieldCount,
++    promotion_shield_count: ladder.shieldCount,
+     last_active_at: new Date().toISOString(),
+     updated_at: new Date().toISOString()
+   };
+@@ -1107,6 +1108,7 @@ async function bumpStreak(studentId, questDate) {
+     streak_days: streak,
+     longest_streak: longest,
+     last_completed_date: questDate,
++    last_decay_date: null,
+     updated_at: new Date().toISOString()
+   };
+   const { error } = await db.from('vocab_student_state').upsert(row, { onConflict: 'student_id' });
+@@ -1114,6 +1116,35 @@ async function bumpStreak(studentId, questDate) {
+   return { streakDays: streak, longestStreak: longest };
+ }
+ 
++/** Rebuild today's attempt rows from student_activity_log (vocab_set). */
++async function loadAttemptLogFromActivity(studentId, questDate) {
++  const listed = await listActivityEvents({
++    studentId: String(studentId),
++    kind: 'vocab_set',
++    days: 3,
++    limit: 80
++  });
++  const day = String(questDate || todayStr());
++  return (listed.events || [])
++    .filter(function (e) {
++      return e.meta && String(e.meta.questDate || '') === day;
++    })
++    .map(function (e) {
++      const m = e.meta || {};
++      return {
++        at: e.at,
++        correctCount: m.correctCount,
++        totalCount: m.totalCount,
++        score: m.testScore,
++        passed: !!m.passed,
++        scoreDelta: m.scoreDelta,
++        beforeScore: m.beforeScore,
++        afterScore: m.afterScore
++      };
++    })
++    .reverse();
++}
++
+ async function getStudentVocabSummary(studentId, classId) {
+   const settings = await getClassSettings(classId);
+   let state = await getStudentState(studentId);
+@@ -1132,7 +1163,7 @@ async function getStudentVocabSummary(studentId, classId) {
+   const sessionsCompleted = Math.max(0, Number(daily.sessions_completed) || 0);
+   const maxSessions = Math.max(1, Number(settings.max_daily_sessions) || DEFAULT_MAX_DAILY_SESSIONS);
+   const promoScore = placed ? clampScore(state.promotion_score) : 0;
+-  const shieldCount = placed ? Math.max(0, Math.round(Number(state.shield_count) || 0)) : 0;
++  const shieldCount = placed ? shieldFromState(state) : 0;
+   let mastery = null;
+   if (placed) {
+     try {
+@@ -1151,7 +1182,12 @@ async function getStudentVocabSummary(studentId, classId) {
+   }
+   const { placementStartAbility } = require('./vocabPlacementService');
+   const placementStartGrade = placementStartAbility(schoolGrade);
+-  const attemptLog = Array.isArray(daily.test_attempt_log) ? daily.test_attempt_log : [];
++  let attemptLog = [];
++  try {
++    attemptLog = await loadAttemptLogFromActivity(studentId, daily.quest_date);
++  } catch (e) {
++    console.warn('loadAttemptLogFromActivity', e.message || e);
++  }
+   return {
+     tierName: placed ? state.tier_name : null,
+     gradeLevel: placed ? state.grade_level : null,
+@@ -1354,7 +1390,7 @@ async function getClassOverview(classId) {
+       promotionScore: promo,
+       promotionScoreMax: PROMOTION_SCORE_MAX,
+       promotionPercent: Math.round((promo / PROMOTION_SCORE_MAX) * 1000) / 10,
+-      shieldCount: placed ? Math.max(0, Math.round(Number(st.shield_count) || 0)) : 0,
++      shieldCount: placed ? shieldFromState(st) : 0,
+       streakDays: st ? st.streak_days : 0,
+       longestStreak: st ? st.longest_streak : 0,
+       placementAt: st ? st.placement_at : null,
+@@ -1363,7 +1399,7 @@ async function getClassOverview(classId) {
+       todayTestPassed: d ? !!d.test_passed : false,
+       todayTestScore: d ? d.test_score : null,
+       todayTestAttempts: d ? d.test_attempts : 0,
+-      todayAttemptLog: d && Array.isArray(d.test_attempt_log) ? d.test_attempt_log : []
++      todayAttemptLog: []
+     };
+   });
+ 
+@@ -1390,14 +1426,15 @@ async function overrideStudentState(studentId, opts) {
+     if (opts.resetPlacement !== false) patch.promotion_score = 0;
+   }
+   if (opts.shieldCount != null) {
+-    patch.shield_count = Math.max(0, Math.round(Number(opts.shieldCount) || 0));
++    patch.promotion_shield_count = Math.max(0, Math.round(Number(opts.shieldCount) || 0));
+   }
+   // Teacher grade override also unlocks Placement retake unless told not to.
+   if (opts.resetPlacement !== false) {
+     patch.placement_at = null;
+     patch.placement_accuracy = null;
+     if (opts.promotionScore == null) patch.promotion_score = 0;
+-    patch.shield_count = 0;
++    patch.promotion_shield_count = 0;
++    patch.last_decay_date = null;
+   }
+   const { error } = await db.from('vocab_student_state').upsert(patch, { onConflict: 'student_id' });
+   if (error) throw new Error(error.message);
+diff --git a/server/src/vocabPromotionService.js b/server/src/vocabPromotionService.js
+index e245661..536527b 100644
+--- a/server/src/vocabPromotionService.js
++++ b/server/src/vocabPromotionService.js
+@@ -78,6 +78,14 @@ function idleDaysSince(lastCompletedDate, today) {
+   return Math.max(0, gap);
+ }
+ 
++/** Live DB column is promotion_shield_count; accept legacy shield_count too. */
++function shieldFromState(state) {
++  if (!state) return 0;
++  const raw =
++    state.promotion_shield_count != null ? state.promotion_shield_count : state.shield_count;
++  return Math.max(0, Math.round(Number(raw) || 0));
++}
++
+ /**
+  * Apply promotion-score change from a test attempt.
+  * @returns {{ gradeLevel, tierName, promotionScore, shieldCount, scoreDelta, promoted, demoted, beforeScore, afterScore }}
+@@ -85,7 +93,7 @@ function idleDaysSince(lastCompletedDate, today) {
+ function applyAttemptToLadder(state, correctCount, totalCount) {
+   const beforeScore = clampScore(state && state.promotion_score);
+   let grade = clampGrade(state && state.grade_level);
+-  let shield = Math.max(0, Math.round(Number(state && state.shield_count) || 0));
++  let shield = shieldFromState(state);
+   const delta = scoreDeltaForAttempt(correctCount, totalCount);
+   let score = beforeScore + delta;
+   let promoted = null;
+@@ -150,28 +158,47 @@ function applyInactivityDecay(state, today) {
+ 
+   const withinGrace = idle <= DECAY_GRACE_DAYS;
+   const decayWarning = idle > DECAY_GRACE_DAYS;
++  const unchanged = {
++    changed: false,
++    withinGrace: withinGrace,
++    idleDays: idle,
++    decayWarning: decayWarning && !withinGrace,
++    gradeLevel: clampGrade(state && state.grade_level),
++    tierName: (state && state.tier_name) || tierForGrade(clampGrade(state && state.grade_level)).name,
++    promotionScore: clampScore(state && state.promotion_score),
++    shieldCount: shieldFromState(state),
++    demoted: null,
++    scoreDelta: 0,
++    lastDecayDate: state && state.last_decay_date ? String(state.last_decay_date).slice(0, 10) : null
++  };
+ 
+   if (withinGrace || idle <= 0) {
+-    return {
+-      changed: false,
+-      withinGrace: true,
+-      idleDays: idle,
+-      decayWarning: false,
+-      gradeLevel: clampGrade(state && state.grade_level),
+-      tierName: (state && state.tier_name) || tierForGrade(clampGrade(state && state.grade_level)).name,
+-      promotionScore: clampScore(state && state.promotion_score),
+-      shieldCount: Math.max(0, Math.round(Number(state && state.shield_count) || 0)),
+-      demoted: null,
+-      scoreDelta: 0
+-    };
++    return Object.assign({}, unchanged, { withinGrace: true, decayWarning: false });
+   }
+ 
+-  const penalizedDays = idle - DECAY_GRACE_DAYS;
++  // Avoid re-applying the same idle penalty every login: only charge NEW days
++  // since last_decay_date (live column). First charge covers idle - grace.
++  // If they completed a set after the last decay, start a fresh idle streak.
++  const lastDecay = state && state.last_decay_date ? String(state.last_decay_date).slice(0, 10) : null;
++  const lastCompleted = last ? String(last).slice(0, 10) : null;
++  const decayFromPriorStreak =
++    !!(lastDecay && lastCompleted && daysBetweenSeoul(lastDecay, lastCompleted) != null &&
++      daysBetweenSeoul(lastDecay, lastCompleted) >= 0);
++  let penalizedDays;
++  if (lastDecay && !decayFromPriorStreak) {
++    const sinceDecay = daysBetweenSeoul(lastDecay, day);
++    if (sinceDecay == null || sinceDecay <= 0) return unchanged;
++    penalizedDays = sinceDecay;
++  } else {
++    penalizedDays = idle - DECAY_GRACE_DAYS;
++  }
++  if (penalizedDays <= 0) return unchanged;
++
+   const loss = penalizedDays * DECAY_POINTS_PER_IDLE_DAY;
+   const beforeScore = clampScore(state && state.promotion_score);
+   let score = beforeScore - loss;
+   let grade = clampGrade(state && state.grade_level);
+-  let shield = Math.max(0, Math.round(Number(state && state.shield_count) || 0));
++  let shield = shieldFromState(state);
+   let demoted = null;
+   let scoreDelta = -loss;
+ 
+@@ -194,7 +221,7 @@ function applyInactivityDecay(state, today) {
+     demoted != null ||
+     clampScore(score) !== beforeScore ||
+     grade !== clampGrade(state && state.grade_level) ||
+-    shield !== Math.max(0, Math.round(Number(state && state.shield_count) || 0));
++    shield !== shieldFromState(state);
+ 
+   return {
+     changed: changed,
+@@ -208,7 +235,8 @@ function applyInactivityDecay(state, today) {
+     demoted: demoted,
+     scoreDelta: scoreDelta,
+     beforeScore: beforeScore,
+-    afterScore: clampScore(score)
++    afterScore: clampScore(score),
++    lastDecayDate: day
+   };
+ }
+ 
+@@ -224,6 +252,7 @@ module.exports = {
+   daysBetweenSeoul,
+   scoreDeltaForAttempt,
+   idleDaysSince,
++  shieldFromState,
+   applyAttemptToLadder,
+   applyInactivityDecay
+ };
 -- 
 2.43.0
 
