@@ -1,6 +1,10 @@
 # Vocab Booster demote / attempt-log fix (for `saltmorning`)
 
-This agent cannot push to `iancentralpark/saltmorning` (403). Apply this patch there and deploy.
+This agent cannot push to `iancentralpark/saltmorning` (403). Code was deployed to Railway via CLI from the local fix tree.
+
+## Deploy status (2026-08-01)
+- **Railway (`mrpark.online`)**: deployed — live `/api/health` shows `portalBuild: "2026-08-01.01"`.
+- **Supabase migration `019_vocab_promotion_ladder.sql`**: **not applied yet** (needs SQL Editor or `SUPABASE_DB_URL`). Without it, `shield_count` / `test_attempt_log` / `vocab_activity_events` writes can fail.
 
 ## What was wrong
 1. **Arthur** demoted after **1 idle day** — inactivity decay ignored the **3-day grace**.
@@ -13,16 +17,19 @@ This agent cannot push to `iancentralpark/saltmorning` (403). Apply this patch t
 - Arthur → **Silver (G4)** (placement kept)
 - Note: override reset their promotion scores to **0** (prod override behavior).
 
-## Apply
+## Remaining: run migration 019
+Open Supabase SQL Editor for project `tedzjzntesjslpiefbbi` and run `server/supabase/migrations/019_vocab_promotion_ladder.sql` (safe to re-run).
+
+Or set `SUPABASE_DB_URL` / `DATABASE_URL` and apply with `psql` / a small node `pg` script.
+
+## Apply patch (if syncing GitHub `saltmorning`)
 ```bash
 cd saltmorning
 git apply saltmorning-patches/0001-Fix-vocab-demote-within-3-day-grace-and-persist-test.patch
-# or: git am < the.patch
-# Run migration 019_vocab_promotion_ladder.sql on Supabase
-# Deploy Railway
 ```
 
 ## Verify
 ```bash
 node server/scripts/test-vocab-promotion.js
+curl -s https://mrpark.online/api/health | jq .portalBuild
 ```
