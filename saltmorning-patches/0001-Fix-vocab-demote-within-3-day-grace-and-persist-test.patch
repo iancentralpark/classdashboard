@@ -1,0 +1,1838 @@
+From 13801aee2ded2fff54677c2cbdc38496438fde6b Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sat, 1 Aug 2026 03:36:57 +0000
+Subject: [PATCH] Fix vocab demote within 3-day grace and persist test
+ attempts.
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Stop inactivity decay/demote for the first 3 Seoul calendar idle days
+(Arthur-style false demote). Score every daily-test submit on the 0–400
+ladder so 7/10 (+6) cannot demote alone, and append each attempt
+(correct/total/delta) to vocab_daily_progress plus the activity feed.
+Use Asia/Seoul for quest "today" on UTC hosts.
+---
+ server/public/js/vocab-learn.js               | 435 ++++++++++++++----
+ server/scripts/build-public.js                |   2 +-
+ server/scripts/test-vocab-promotion.js        | 113 +++++
+ server/src/routes.js                          |  14 +
+ server/src/studentPortalService.js            |  32 +-
+ server/src/vocabActivityService.js            |  75 +++
+ server/src/vocabLearningService.js            | 346 ++++++++++++--
+ server/src/vocabPromotionService.js           | 229 +++++++++
+ .../migrations/019_vocab_promotion_ladder.sql |  33 ++
+ 9 files changed, 1157 insertions(+), 122 deletions(-)
+ create mode 100644 server/scripts/test-vocab-promotion.js
+ create mode 100644 server/src/vocabActivityService.js
+ create mode 100644 server/src/vocabPromotionService.js
+ create mode 100644 server/supabase/migrations/019_vocab_promotion_ladder.sql
+
+diff --git a/server/public/js/vocab-learn.js b/server/public/js/vocab-learn.js
+index 872a70e..6657730 100644
+--- a/server/public/js/vocab-learn.js
++++ b/server/public/js/vocab-learn.js
+@@ -1,5 +1,5 @@
+ /**
+- * Student Vocab Learner — Placement Test + Step Cards + AI Deep-Dive (DB-free first).
++ * Student Vocab Booster — Placement Test + daily sets + promotion ladder.
+  * Expects window.MrParkVocabData from vocab-mock-data.js and Student portal api()/TOKEN patterns via hooks.
+  */
+ (function (root) {
+@@ -7,9 +7,10 @@
+ 
+   var STORAGE_KEY_PREFIX = 'mrpark_vocab_placement_v2:';
+   var LEGACY_STORAGE_KEY = 'mrpark_vocab_placement_v1';
+-  var PLACEMENT_MIN = 15;
+-  var PLACEMENT_MAX = 24;
++  var PLACEMENT_MIN = 12;
++  var PLACEMENT_MAX = 18;
+   var QUESTION_COUNT = PLACEMENT_MAX; // progress denominator / legacy label
++  var HARD_MISS_GAP = 0.75;
+   var QUESTION_SECONDS = 60;
+   var PLACEMENT_SECONDS = QUESTION_SECONDS;
+   var state = {
+@@ -37,9 +38,130 @@
+     deckIndex: 0,
+     deck: [],
+     mastery: null,
+-    summary: null
++    promotionScore: 0,
++    promotionScoreMax: 400,
++    promotionPercent: 0,
++    shieldCount: 0,
++    decayWarning: false,
++    summary: null,
++    sessionStudentId: '',
++    _bound: false
+   };
+ 
++  function blankQuest() {
++    return {
++      queue: [],
++      masterQueue: [],
++      targetCount: 10,
++      passThreshold: 100,
++      studyIndex: 0,
++      studyMaxIndex: 0,
++      phase: 'idle',
++      testIndex: 0,
++      testWords: [],
++      testTypes: [],
++      testAnswers: [],
++      currentTestQ: null,
++      locked: false,
++      selectedChoice: null,
++      qStartedAt: 0,
++      timerEndsAt: 0,
++      timerId: null,
++      tickId: null,
++      pauseUsed: false,
++      paused: false,
++      pauseRemainingMs: 0,
++      sessionsCompleted: 0,
++      maxSessions: null,
++      forceAnotherSet: false,
++      alreadyPassedToday: false,
++      isRetryAttempt: false,
++      retryWordIds: {}
++    };
++  }
++
++  /**
++   * Wipe in-memory vocab UI when the logged-in student changes (logout / switch account).
++   * Without this, the previous student's tier hero sticks until a full page reload.
++   */
++  function resetVocabSession(opts) {
++    opts = opts || {};
++    clearPlacementTimer();
++    clearQuestTestTimer();
++    state.view = 'home';
++    state.abilityGrade = 6;
++    state.abilityTrail = [];
++    state.avoidWordIds = [];
++    state.questionIndex = 0;
++    state.answers = [];
++    state.currentQ = null;
++    state.locked = false;
++    state.selectedChoice = null;
++    state.pauseUsed = false;
++    state.paused = false;
++    state.pauseRemainingMs = 0;
++    state.schoolGrade = null;
++    state.placementStartGrade = 4;
++    state.startAbility = 4;
++    state.placement = null;
++    state.placementDone = false;
++    state.deckIndex = 0;
++    state.deck = [];
++    state.mastery = null;
++    state.promotionScore = 0;
++    state.promotionScoreMax = 400;
++    state.promotionPercent = 0;
++    state.shieldCount = 0;
++    state.decayWarning = false;
++    state.summary = null;
++    if (!opts.keepSessionId) state.sessionStudentId = '';
++
++    // Replace quest object fields in place so closures keep working.
++    var fresh = blankQuest();
++    Object.keys(fresh).forEach(function (k) { quest[k] = fresh[k]; });
++
++    var questBody = $('vocabQuestBody');
++    if (questBody) questBody.innerHTML = '';
++    var quizBody = $('vocabQuizBody');
++    if (quizBody) quizBody.innerHTML = '';
++    var resultBody = $('vocabResultBody');
++    if (resultBody) resultBody.innerHTML = '';
++    var masteryWrap = $('vocabMasteryWrap');
++    if (masteryWrap) {
++      masteryWrap.innerHTML = '';
++      masteryWrap.classList.add('hidden');
++    }
++    var ladder = $('vocabTierLadder');
++    if (ladder) {
++      ladder.classList.add('hidden');
++      ladder.setAttribute('hidden', '');
++    }
++    try {
++      document.querySelectorAll('.vocab-decay-banner').forEach(function (el) {
++        if (el && el.parentNode) el.parentNode.removeChild(el);
++      });
++    } catch (e) { /* ignore */ }
++
++    setView('home');
++    renderHomeStats();
++    syncPlacementVisibility();
++  }
++
++  function ensureStudentSession() {
++    var sid = currentStudentId();
++    if (!sid) {
++      if (state.sessionStudentId || state.placement || state.placementDone) {
++        resetVocabSession();
++      }
++      return false;
++    }
++    if (state.sessionStudentId && state.sessionStudentId !== sid) {
++      resetVocabSession({ keepSessionId: true });
++    }
++    state.sessionStudentId = sid;
++    return true;
++  }
++
+   function currentStudentId() {
+     try {
+       if (typeof root.getLoggedInStudentId === 'function') {
+@@ -144,33 +266,7 @@
+     });
+   }
+ 
+-  var quest = {
+-    queue: [],
+-    masterQueue: [],
+-    targetCount: 10,
+-    passThreshold: 100,
+-    studyIndex: 0,
+-    studyMaxIndex: 0,
+-    phase: 'idle', // idle | study | test | done
+-    testIndex: 0,
+-    testWords: [],
+-    testTypes: [],
+-    testAnswers: [],
+-    currentTestQ: null,
+-    locked: false,
+-    selectedChoice: null,
+-    qStartedAt: 0,
+-    timerEndsAt: 0,
+-    timerId: null,
+-    tickId: null,
+-    pauseUsed: false,
+-    paused: false,
+-    pauseRemainingMs: 0,
+-    sessionsCompleted: 0,
+-    maxSessions: 3,
+-    forceAnotherSet: false,
+-    alreadyPassedToday: false
+-  };
++  var quest = blankQuest();
+ 
+   var TIER_BADGES = {
+     Rookie: { icon: 'fa-seedling', className: 'tier-rookie' },
+@@ -217,8 +313,14 @@
+ 
+   function applyServerSummary(summary) {
+     if (!summary) return;
++    ensureStudentSession();
+     state.summary = summary;
+     state.mastery = summary.mastery || null;
++    state.promotionScore = Number(summary.promotionScore) || 0;
++    state.promotionScoreMax = Number(summary.promotionScoreMax) || 400;
++    state.promotionPercent = Number(summary.promotionPercent) || 0;
++    state.shieldCount = Math.max(0, Math.round(Number(summary.shieldCount) || 0));
++    state.decayWarning = !!(summary.decayWarning || summary.decay_warning);
+     // Server is authoritative. Never keep a cached tier when placement is unfinished.
+     state.placementDone = !!summary.placementDone;
+     if (summary.schoolGrade != null) state.schoolGrade = summary.schoolGrade;
+@@ -245,7 +347,6 @@
+     }
+     if (summary.today) {
+       quest.sessionsCompleted = summary.today.sessionsCompleted || 0;
+-      quest.maxSessions = summary.today.maxSessions || 3;
+       quest.alreadyPassedToday = !!summary.today.testPassed;
+     }
+     renderHomeStats();
+@@ -262,23 +363,32 @@
+   }
+ 
+   function refreshServerSummary() {
++    ensureStudentSession();
++    var sidAtRequest = currentStudentId();
+     return apiFetch('/api/student/vocab/summary?_=' + Date.now())
+       .then(function (summary) {
++        // Drop stale responses if the student switched mid-flight.
++        if (sidAtRequest && currentStudentId() && sidAtRequest !== currentStudentId()) {
++          return summary;
++        }
+         applyServerSummary(summary);
+         return summary;
+       })
+       .catch(function () {
+-        // Offline/cache only for THIS student, and only if it looks like a real placement.
+-        var saved = loadSaved();
+         var sid = currentStudentId();
++        // Never keep another student's in-memory tier after a failed fetch.
++        if (state.sessionStudentId && sid && state.sessionStudentId !== sid) {
++          resetVocabSession({ keepSessionId: true });
++          state.sessionStudentId = sid;
++        }
++        var saved = loadSaved();
+         if (saved && saved.result && (!saved.studentId || saved.studentId === sid)) {
+           state.placement = saved.result;
+           state.placementDone = true;
+-        } else {
+-          clearSavedPlacement();
+-          state.placement = null;
+-          state.placementDone = false;
++        } else if (!sid) {
++          resetVocabSession();
+         }
++        // If we already have this student's placement in memory, keep UI; otherwise show empty.
+         renderHomeStats();
+         syncPlacementVisibility();
+         if (state.placementDone && quest.phase === 'idle') loadQuestInline();
+@@ -301,7 +411,7 @@
+         hero.className = 'vocab-tier-hero';
+         hero.setAttribute('aria-disabled', 'true');
+       }
+-      renderMasteryBar(null);
++      renderPromotionBar(null);
+       renderTierLadder(null);
+       return;
+     }
+@@ -314,7 +424,14 @@
+       hero.setAttribute('aria-disabled', 'false');
+       hero.setAttribute('title', 'See all tiers');
+     }
+-    renderMasteryBar(state.mastery);
++    renderPromotionBar(state.summary || {
++      promotionScore: state.promotionScore,
++      promotionScoreMax: state.promotionScoreMax,
++      promotionPercent: state.promotionPercent,
++      shieldCount: state.shieldCount,
++      decayWarning: state.decayWarning,
++      mastery: state.mastery
++    });
+     renderTierLadder(tierName);
+   }
+ 
+@@ -409,7 +526,7 @@
+     setTierLadderOpen(!isTierLadderOpen());
+   }
+ 
+-  function renderMasteryBar(mastery) {
++  function renderPromotionBar(summary) {
+     var wrap = $('vocabMasteryWrap');
+     if (!wrap) {
+       var hero = $('vocabTierHero');
+@@ -419,23 +536,46 @@
+       wrap.className = 'vocab-mastery-wrap';
+       hero.insertAdjacentElement('afterend', wrap);
+     }
+-    if (!mastery || !mastery.tierWords) {
++    if (!summary || !state.placementDone) {
+       wrap.innerHTML = '';
+       wrap.classList.add('hidden');
+       return;
+     }
+     wrap.classList.remove('hidden');
+-    var pct = Math.min(100, Math.max(0, Number(mastery.percent) || 0));
+-    var left = Math.max(0, Number(mastery.remaining) || 0);
++    var score = Math.max(0, Number(summary.promotionScore) || 0);
++    var max = Math.max(1, Number(summary.promotionScoreMax) || 400);
++    var pct = Math.min(100, Math.max(0, Number(summary.promotionPercent) || Math.round((score / max) * 1000) / 10));
++    var left = Math.max(0, Math.round((max - score) * 10) / 10);
++    var shield = Math.max(0, Math.round(Number(summary.shieldCount) || 0));
++    var mastery = summary.mastery || state.mastery;
++    var masteryLine = (mastery && mastery.tierWords)
++      ? ('Bank mastery: ' + mastery.mastered + ' / ' + mastery.tierWords + ' (' + (mastery.percent || 0) + '%) — kept even if demoted.')
++      : '';
+     wrap.innerHTML =
+       '<div class="vocab-mastery-label">' +
+-      'Tier progress · Mastered <strong>' + mastery.mastered + ' / ' + mastery.tierWords + '</strong> (' + pct + '%)' +
++      'Promotion score · <strong>' + score + ' / ' + max + '</strong> (' + pct + '%)' +
+       (left > 0
+-        ? ' · <strong>' + left + '</strong> more correct to promote'
+-        : ' · Ready to promote on next passed test!') +
++        ? ' · <strong>' + left + '</strong> to next tier'
++        : ' · Ready to promote!') +
++      (shield > 0 ? ' · Shield: ' + shield + ' items' : '') +
+       '</div>' +
+-      '<div class="vocab-progress vocab-mastery-bar"><span style="width:' + Math.min(100, Math.round((mastery.mastered / Math.max(1, mastery.tierWords)) * 100)) + '%"></span></div>' +
+-      '<p class="vocab-mastery-hint">Promote at ' + (mastery.promoteAt || 80) + '% of this grade\'s words answered correctly at least once.</p>';
++      '<div class="vocab-progress vocab-mastery-bar"><span style="width:' + Math.min(100, Math.round((score / max) * 100)) + '%"></span></div>' +
++      (summary.decayWarning || summary.decay_warning
++        ? '<p class="vocab-mastery-hint" style="color:#b45309;">Rank decay active (after 3 idle days) — study today to stop losing promotion points.</p>'
++        : '<p class="vocab-mastery-hint">Reach ' + max + ' to promote. Score ≤ 0 without a shield demotes one tier (re-entry at 390). No decay for the first 3 idle days.</p>') +
++      (masteryLine ? '<p class="vocab-mastery-hint">' + escapeHtml(masteryLine) + '</p>' : '');
++  }
++
++  /** @deprecated Use renderPromotionBar */
++  function renderMasteryBar(mastery) {
++    renderPromotionBar(mastery && mastery.promotionScore != null ? mastery : {
++      promotionScore: state.promotionScore,
++      promotionScoreMax: state.promotionScoreMax,
++      promotionPercent: state.promotionPercent,
++      shieldCount: state.shieldCount,
++      decayWarning: state.decayWarning,
++      mastery: mastery || state.mastery
++    });
+   }
+ 
+   function shuffle(arr) {
+@@ -617,23 +757,56 @@
+     };
+   }
+ 
+-  function localUpdateAbility(abilityGrade, item) {
+-    var ability = Math.max(0.5, Math.min(12.5, Number(abilityGrade) || 4));
++  function stepSizeForQuestion(questionNumber) {
++    var n = Math.max(1, Math.round(Number(questionNumber) || 1));
++    if (n <= 5) return 1.2;
++    if (n <= 12) return 0.6;
++    return 0.25;
++  }
++
++  function localUpdateAbilityDetailed(abilityGrade, item) {
++    var prev = Math.max(0.5, Math.min(12.5, Number(abilityGrade) || 4));
+     var correct = !!(item && item.correct);
+-    var type = String((item && item.questionType) || 'meaning');
+     var itemGrade = Number(item && (item.frequencyLevel != null ? item.frequencyLevel : item.targetGrade));
+-    var step = 0.35;
+-    if (type === 'cloze' || type === 'sentence') step = 0.38;
+-    if (type === 'whichWord') step = 0.36;
+-    if (type === 'nuance') step = 0.4;
++    var qNum = item && item.questionNumber != null
++      ? Math.max(1, Math.round(Number(item.questionNumber)))
++      : Math.max(1, Math.round(Number(item && item.questionIndex) || 0) + 1);
++    var step = stepSizeForQuestion(qNum);
++    var delta = 0;
+     if (correct) {
+-      if (Number.isFinite(itemGrade) && itemGrade < ability - 0.75) ability += step * 0.35;
+-      else ability += step;
++      delta = step;
++    } else if (Number.isFinite(itemGrade) && itemGrade > prev + HARD_MISS_GAP) {
++      delta = -step * 0.5;
+     } else {
+-      if (Number.isFinite(itemGrade) && itemGrade > ability + 0.75) ability -= step * 0.5;
+-      else ability -= step;
++      delta = -step;
+     }
+-    return Math.round(Math.max(0.5, Math.min(12.5, ability)) * 100) / 100;
++    delta = Math.round(delta * 100) / 100;
++    var ability = Math.round(Math.max(0.5, Math.min(12.5, prev + delta)) * 100) / 100;
++    return {
++      ability: ability,
++      prev: prev,
++      step: step,
++      delta: delta,
++      correct: correct,
++      itemGrade: Number.isFinite(itemGrade) ? itemGrade : null,
++      questionNumber: qNum
++    };
++  }
++
++  function logPlacementStep(detail) {
++    var g = detail.itemGrade != null ? detail.itemGrade : '?';
++    var ox = detail.correct ? 'O' : 'X';
++    var stepSigned = detail.delta >= 0 ? ('+' + detail.delta) : String(detail.delta);
++    console.log(
++      '[Q' + detail.questionNumber + '] 난이도: Grade ' + g +
++      ' | 정답여부: ' + ox +
++      ' | ability: ' + detail.prev + ' -> ' + detail.ability +
++      ' (Step: ' + stepSigned + ')'
++    );
++  }
++
++  function localUpdateAbility(abilityGrade, item) {
++    return localUpdateAbilityDetailed(abilityGrade, item).ability;
+   }
+ 
+   function clearPlacementTimer() {
+@@ -784,6 +957,17 @@
+       }
+       renderPlacementQuestionCard(state.currentQ);
+     }).catch(function (err) {
++      var msg = (err && err.message) || '';
++      if (/already completed|PLACEMENT_ALREADY_DONE/i.test(msg)) {
++        state.placementDone = true;
++        if (typeof root.appAlert === 'function') root.appAlert(msg);
++        else window.alert(msg);
++        refreshServerSummary().finally(function () {
++          setView('home');
++          syncPlacementVisibility();
++        });
++        return;
++      }
+       // Fallback to local mock pack if bank API fails
+       var q = buildQuestion(Math.round(state.abilityGrade), state.questionIndex);
+       state.currentQ = q;
+@@ -869,7 +1053,8 @@
+       questionType: q.type,
+       frequencyLevel: q.frequencyLevel,
+       word: q.word.word,
+-      timedOut: !!timedOut
++      timedOut: !!timedOut,
++      questionIndex: state.questionIndex
+     };
+     state.answers.push(answer);
+ 
+@@ -893,8 +1078,21 @@
+         abilityTrail: state.abilityTrail
+       }
+     }).then(function (res) {
+-      if (res && res.abilityGrade != null) state.abilityGrade = res.abilityGrade;
+-      else state.abilityGrade = localUpdateAbility(state.abilityGrade, answer);
++      if (res && res.abilityGrade != null) {
++        logPlacementStep({
++          questionNumber: res.questionNumber != null ? res.questionNumber : (state.questionIndex + 1),
++          itemGrade: res.itemGrade != null ? res.itemGrade : q.frequencyLevel,
++          correct: correct,
++          prev: res.prevAbility != null ? res.prevAbility : state.abilityGrade,
++          ability: res.abilityGrade,
++          delta: res.delta != null ? res.delta : 0
++        });
++        state.abilityGrade = res.abilityGrade;
++      } else {
++        var localDetail = localUpdateAbilityDetailed(state.abilityGrade, answer);
++        logPlacementStep(localDetail);
++        state.abilityGrade = localDetail.ability;
++      }
+       if (res && Array.isArray(res.abilityTrail)) state.abilityTrail = res.abilityTrail;
+       else state.abilityTrail.push(state.abilityGrade);
+       state.questionIndex += 1;
+@@ -903,7 +1101,9 @@
+       else if (state.questionIndex >= PLACEMENT_MAX) finishPlacement();
+       else showQuestion();
+     }).catch(function () {
+-      state.abilityGrade = localUpdateAbility(state.abilityGrade, answer);
++      var detail = localUpdateAbilityDetailed(state.abilityGrade, answer);
++      logPlacementStep(detail);
++      state.abilityGrade = detail.ability;
+       state.abilityTrail.push(state.abilityGrade);
+       state.questionIndex += 1;
+       if (state.questionIndex >= PLACEMENT_MAX) finishPlacement();
+@@ -926,7 +1126,21 @@
+       renderResult(res);
+       setView('result');
+       syncPlacementVisibility();
+-    }).catch(function () {
++    }).catch(function (err) {
++      var msg = (err && err.message) || '';
++      if (/already completed|PLACEMENT_ALREADY_DONE/i.test(msg) || (err && err.code === 'PLACEMENT_ALREADY_DONE')) {
++        state.placementDone = true;
++        if (typeof root.appAlert === 'function') {
++          root.appAlert(msg || 'Placement is already done. Ask your teacher to reset if you need a retake.');
++        } else {
++          window.alert(msg || 'Placement is already done. Ask your teacher to reset if you need a retake.');
++        }
++        refreshServerSummary().finally(function () {
++          setView('home');
++          syncPlacementVisibility();
++        });
++        return;
++      }
+       // Local fallback score
+       var ability = state.abilityGrade;
+       var pack = data();
+@@ -1128,21 +1342,10 @@
+         quest.targetCount = queue.targetCount || 10;
+         quest.passThreshold = queue.passThreshold || 100;
+         quest.sessionsCompleted = queue.sessionsCompleted || 0;
+-        quest.maxSessions = queue.maxSessions || 3;
+         quest.alreadyPassedToday = !!queue.testPassed;
+         quest.masterQueue = (queue.words || []).slice();
+         quest.queue = quest.masterQueue.slice();
+ 
+-        if (!queue.canStartAnother) {
+-          quest.phase = 'done';
+-          box.innerHTML =
+-            '<div class="vocab-result">' +
+-            '<div class="vocab-tier-badge"><i class="fa-solid fa-trophy"></i> Today\u2019s sets complete!</div>' +
+-            '<p>You finished ' + quest.sessionsCompleted + ' / ' + quest.maxSessions + ' sets. Come back tomorrow to keep going.</p>' +
+-            '</div>';
+-          return;
+-        }
+-
+         // After at least one set today, wait for an explicit "another set" click
+         // (unless the student just pressed that button).
+         if (quest.sessionsCompleted > 0 && !quest.forceAnotherSet) {
+@@ -1150,12 +1353,10 @@
+           box.innerHTML =
+             '<div class="vocab-result">' +
+             '<div class="vocab-tier-badge"><i class="fa-solid fa-circle-check"></i> Set complete</div>' +
+-            '<p>Sets today: ' + quest.sessionsCompleted + ' / ' + quest.maxSessions +
+-            (quest.alreadyPassedToday ? ' · Reward already claimed' : '') + '</p>' +
++            (quest.alreadyPassedToday ? '<p>Reward already claimed for today — keep studying to build promotion score.</p>' : '') +
+             (quest.queue.length
+               ? '<div class="vocab-actions" style="justify-content:center;margin-top:0.75rem;">' +
+-                '<button type="button" class="vocab-btn" id="vocabAnotherSetBtn">Study another set (' +
+-                (quest.sessionsCompleted + 1) + '/' + quest.maxSessions + ')</button></div>'
++                '<button type="button" class="vocab-btn" id="vocabAnotherSetBtn">Study another set</button></div>'
+               : '<p class="vocab-empty">No more words available right now.</p>') +
+             '</div>';
+           var againBtn = $('vocabAnotherSetBtn');
+@@ -1187,6 +1388,17 @@
+       if (box) box.innerHTML = '<p class="vocab-empty">No words available right now. Try again later.</p>';
+       return;
+     }
++    // Restudy of missed words → next test is scored as retry (오답노트).
++    if (Array.isArray(words) && words.length) {
++      quest.isRetryAttempt = true;
++      quest.retryWordIds = {};
++      words.forEach(function (w) {
++        if (w && w.word_id) quest.retryWordIds[String(w.word_id)] = true;
++      });
++    } else {
++      quest.isRetryAttempt = false;
++      quest.retryWordIds = {};
++    }
+     quest.queue = list.slice();
+     quest.studyIndex = 0;
+     quest.studyMaxIndex = 0;
+@@ -1523,9 +1735,13 @@
+         correctCount: correctCount,
+         totalCount: total,
+         answers: quest.testAnswers.map(function (a) {
++          var wid = a.word && a.word.word_id;
++          var isRetry = !!(quest.isRetryAttempt || (wid && quest.retryWordIds[String(wid)]));
+           return {
+-            wordId: a.word && a.word.word_id,
+-            correct: !!a.correct
++            wordId: wid,
++            correct: !!a.correct,
++            attempt: isRetry ? 'retry' : 'first',
++            isRetry: isRetry
+           };
+         })
+       }
+@@ -1534,6 +1750,8 @@
+         renderMissedRestudyGate(res, correctCount, total, missed);
+         return;
+       }
++      quest.isRetryAttempt = false;
++      quest.retryWordIds = {};
+       renderQuestDone(res, correctCount, total);
+     }).catch(function (err) {
+       var box = $('vocabQuestBody');
+@@ -1546,12 +1764,21 @@
+     if (!box) return;
+     clearQuestTestTimer();
+     quest.phase = 'idle';
++    var promo = res.promotion || res.rating || {};
++    var promoLine = promo.promotionScore != null
++      ? '<p>Promotion score: <strong>' + promo.promotionScore + ' / ' + (promo.promotionScoreMax || 400) + '</strong>' +
++        (promo.scoreDelta != null || promo.delta != null
++          ? ' (' + ((promo.scoreDelta != null ? promo.scoreDelta : promo.delta) > 0 ? '+' : '') +
++            (promo.scoreDelta != null ? promo.scoreDelta : promo.delta) + ')'
++          : '') + '</p>'
++      : '';
+     box.innerHTML =
+       '<div class="vocab-result">' +
+       '<div class="vocab-tier-badge"><i class="fa-solid fa-rotate-left"></i> Review the ones you missed</div>' +
+       '<h3>Score: ' + correctCount + ' / ' + total + ' (' + res.score + '%)</h3>' +
++      promoLine +
+       '<p>You need 100% to finish. Restudy the ' + missed.length +
+-      ' missed word' + (missed.length === 1 ? '' : 's') + ', then take the test again from the start.</p>' +
++      ' missed word' + (missed.length === 1 ? '' : 's') + ', then retest them (retry scoring applies).</p>' +
+       '<div class="vocab-actions">' +
+       '<button type="button" class="vocab-btn" id="vocabQuestRestudyBtn">Restudy missed words</button>' +
+       '</div></div>';
+@@ -1559,6 +1786,7 @@
+     if (btn) btn.addEventListener('click', function () {
+       startQuestStudy(missed);
+     });
++    refreshServerSummary();
+   }
+ 
+   function renderQuestDone(res, correctCount, total) {
+@@ -1571,27 +1799,36 @@
+     quest.phase = passed ? 'done' : 'idle';
+     if (passed) {
+       quest.sessionsCompleted = res.sessionsCompleted != null ? res.sessionsCompleted : (quest.sessionsCompleted + 1);
+-      quest.maxSessions = res.maxSessions || quest.maxSessions || 3;
+       quest.alreadyPassedToday = true;
+     }
+     var mastery = res.mastery || (res.rating && res.rating.mastery);
+-    var canMore = passed && res.canStartAnother;
++    var promo = res.promotion || res.rating || {};
++    var canMore = !!passed;
+     var hasSpinReward = !!(passed && reward && (reward.tier || reward.prizeText));
+     var hasDollarReward = !!(passed && dollarBonus && Number(dollarBonus.amount) > 0);
++    var promoScore = promo.promotionScore != null ? promo.promotionScore : null;
++    var promoMax = promo.promotionScoreMax || 400;
++    var scoreDelta = promo.scoreDelta != null ? promo.scoreDelta : promo.delta;
+ 
+     box.innerHTML =
+       '<div class="vocab-result vocab-result-celebrate">' +
+       '<div class="vocab-tier-badge"><i class="fa-solid ' + (passed ? 'fa-trophy' : 'fa-rotate-left') + '"></i> ' +
+       (passed ? 'Set complete!' : 'Almost there') + '</div>' +
+       '<h3>Score: ' + correctCount + ' / ' + total + ' (' + res.score + '%)</h3>' +
+-      '<p>Pass threshold: ' + res.threshold + '%' +
+-      (passed ? ' · Sets today: ' + quest.sessionsCompleted + ' / ' + quest.maxSessions : '') + '</p>' +
++      '<p>Pass threshold: ' + res.threshold + '%</p>' +
+       (res.rating && res.rating.promoted === 'up'
+         ? '<p>⬆️ Promoted to Grade ' + escapeHtml(String(res.rating.gradeLevel)) + ' (' + escapeHtml(res.rating.tierName) + ')!</p>'
+         : '') +
++      (res.rating && res.rating.demoted === 'down'
++        ? '<p>⬇️ Demoted to Grade ' + escapeHtml(String(res.rating.gradeLevel)) + ' (' + escapeHtml(res.rating.tierName) + ') · re-entry at 390</p>'
++        : '') +
++      (promoScore != null
++        ? '<p>Promotion score: <strong>' + promoScore + ' / ' + promoMax + '</strong>' +
++          (scoreDelta != null ? ' (' + (scoreDelta > 0 ? '+' : '') + scoreDelta + ')' : '') +
++          (promo.shieldCount > 0 ? ' · Shield ' + promo.shieldCount : '') + '</p>'
++        : '') +
+       (mastery
+-        ? '<p>Tier mastery: <strong>' + mastery.mastered + ' / ' + mastery.tierWords + '</strong> (' + mastery.percent + '%)' +
+-          (mastery.remaining > 0 ? ' · ' + mastery.remaining + ' left to promote' : ' · promote-ready!') + '</p>'
++        ? '<p class="vocab-empty">Bank mastery: ' + mastery.mastered + ' / ' + mastery.tierWords + ' (' + mastery.percent + '%)</p>'
+         : '') +
+       (res.streak ? '<p>🔥 Streak: ' + res.streak.streakDays + ' day' + (res.streak.streakDays === 1 ? '' : 's') + ' (best ' + res.streak.longestStreak + ')</p>' : '') +
+       '<div id="vocabRewardStage" class="vocab-reward-stage">' +
+@@ -1606,8 +1843,7 @@
+       '</div>' +
+       (canMore
+         ? '<div class="vocab-actions" style="justify-content:center;margin-top:0.85rem;" id="vocabAnotherSetWrap">' +
+-          '<button type="button" class="vocab-btn secondary" id="vocabAnotherSetBtn">Study another set (' +
+-          (quest.sessionsCompleted + 1) + '/' + quest.maxSessions + ')</button></div>'
++          '<button type="button" class="vocab-btn secondary" id="vocabAnotherSetBtn">Study another set</button></div>'
+         : '') +
+       '</div>';
+ 
+@@ -1633,6 +1869,7 @@
+     }
+ 
+     if (passed) refreshServerSummary();
++    else if (res.rating || res.promotion) refreshServerSummary();
+   }
+ 
+   function showVocabDollarClaimButton(dollarBonus) {
+@@ -1774,6 +2011,7 @@
+       console.warn('[vocab] MrParkVocabData missing');
+     }
+     try { localStorage.removeItem(LEGACY_STORAGE_KEY); } catch (e) { /* ignore */ }
++    ensureStudentSession();
+     if (state._bound) {
+       refreshServerSummary();
+       return;
+@@ -1784,8 +2022,21 @@
+     refreshServerSummary();
+   }
+ 
++  function onLogout() {
++    resetVocabSession();
++  }
++
++  function onLogin() {
++    ensureStudentSession();
++    setView('home');
++    return refreshServerSummary();
++  }
++
+   root.MrParkVocabLearn = {
+     init: init,
++    onLogout: onLogout,
++    onLogin: onLogin,
++    resetSession: resetVocabSession,
+     startPlacement: startPlacement,
+     openQuest: openQuest,
+     setView: setView,
+diff --git a/server/scripts/build-public.js b/server/scripts/build-public.js
+index ca7fa17..2596d3a 100644
+--- a/server/scripts/build-public.js
++++ b/server/scripts/build-public.js
+@@ -7,7 +7,7 @@
+ const fs = require('fs');
+ const path = require('path');
+ 
+-const PORTAL_BUILD = '2026-07-31.08';
++const PORTAL_BUILD = '2026-08-01.01';
+ 
+ const serverDir = path.join(__dirname, '..');
+ const repoRoot = path.join(serverDir, '..');
+diff --git a/server/scripts/test-vocab-promotion.js b/server/scripts/test-vocab-promotion.js
+new file mode 100644
+index 0000000..3595a35
+--- /dev/null
++++ b/server/scripts/test-vocab-promotion.js
+@@ -0,0 +1,113 @@
++#!/usr/bin/env node
++/**
++ * Unit checks for vocab promotion ladder + 3-day decay grace.
++ * Run: node server/scripts/test-vocab-promotion.js
++ */
++const assert = require('assert');
++const {
++  scoreDeltaForAttempt,
++  applyAttemptToLadder,
++  applyInactivityDecay,
++  DECAY_GRACE_DAYS,
++  DEMOTE_REENTRY_SCORE
++} = require('../src/vocabPromotionService');
++
++function check(name, fn) {
++  try {
++    fn();
++    console.log('ok  ', name);
++  } catch (e) {
++    console.error('FAIL', name, e.message);
++    process.exitCode = 1;
++  }
++}
++
++check('7/10 yields +6 (must not demote by itself)', function () {
++  assert.strictEqual(scoreDeltaForAttempt(7, 10), 6);
++  const r = applyAttemptToLadder(
++    { grade_level: 7, promotion_score: 100, shield_count: 0 },
++    7,
++    10
++  );
++  assert.strictEqual(r.scoreDelta, 6);
++  assert.strictEqual(r.promotionScore, 106);
++  assert.strictEqual(r.demoted, null);
++  assert.strictEqual(r.gradeLevel, 7);
++});
++
++check('0/10 from low score demotes to re-entry 390', function () {
++  const r = applyAttemptToLadder(
++    { grade_level: 7, promotion_score: 10, shield_count: 0 },
++    0,
++    10
++  );
++  assert.strictEqual(r.scoreDelta, -15);
++  assert.strictEqual(r.demoted, 'down');
++  assert.strictEqual(r.gradeLevel, 6);
++  assert.strictEqual(r.promotionScore, DEMOTE_REENTRY_SCORE);
++});
++
++check('idle day 1–3 within grace: no decay, no demote', function () {
++  for (let idle = 0; idle <= DECAY_GRACE_DAYS; idle++) {
++    const last = '2026-07-28';
++    // today = last + idle days
++    const d = new Date('2026-07-28T12:00:00');
++    d.setDate(d.getDate() + idle);
++    const today =
++      d.getFullYear() +
++      '-' +
++      String(d.getMonth() + 1).padStart(2, '0') +
++      '-' +
++      String(d.getDate()).padStart(2, '0');
++    const r = applyInactivityDecay(
++      {
++        grade_level: 4,
++        tier_name: 'Silver',
++        promotion_score: 50,
++        shield_count: 0,
++        last_completed_date: last
++      },
++      today
++    );
++    assert.strictEqual(r.withinGrace, true, 'idle=' + idle);
++    assert.strictEqual(r.changed, false, 'idle=' + idle);
++    assert.strictEqual(r.demoted, null, 'idle=' + idle);
++    assert.strictEqual(r.promotionScore, 50, 'idle=' + idle);
++  }
++});
++
++check('Arthur-style: 1 idle day must not demote', function () {
++  const r = applyInactivityDecay(
++    {
++      grade_level: 4,
++      tier_name: 'Silver',
++      promotion_score: 5,
++      shield_count: 0,
++      last_completed_date: '2026-07-31'
++    },
++    '2026-08-01'
++  );
++  assert.strictEqual(r.idleDays, 1);
++  assert.strictEqual(r.withinGrace, true);
++  assert.strictEqual(r.changed, false);
++  assert.strictEqual(r.demoted, null);
++});
++
++check('day 4 idle can decay points', function () {
++  const r = applyInactivityDecay(
++    {
++      grade_level: 4,
++      tier_name: 'Silver',
++      promotion_score: 100,
++      shield_count: 0,
++      last_completed_date: '2026-07-28'
++    },
++    '2026-08-01' // 4 days later
++  );
++  assert.strictEqual(r.idleDays, 4);
++  assert.strictEqual(r.withinGrace, false);
++  assert.ok(r.scoreDelta < 0);
++  assert.strictEqual(r.promotionScore, 100 - 15); // 1 penalized day
++});
++
++if (!process.exitCode) console.log('\nAll vocab promotion checks passed.');
+diff --git a/server/src/routes.js b/server/src/routes.js
+index 1fb682f..12d3f80 100644
+--- a/server/src/routes.js
++++ b/server/src/routes.js
+@@ -1762,6 +1762,8 @@ router.post('/vocab/student/:studentId/override', requireTeacherAuth, async (req
+     const body = req.body || {};
+     res.json(await overrideVocabStudentState(req.params.studentId, {
+       gradeLevel: body.gradeLevel,
++      promotionScore: body.promotionScore,
++      shieldCount: body.shieldCount,
+       resetPlacement: body.resetPlacement !== false
+     }));
+   } catch (e) {
+@@ -1770,6 +1772,18 @@ router.post('/vocab/student/:studentId/override', requireTeacherAuth, async (req
+   }
+ });
+ 
++router.get('/teacher/activity', requireTeacherAuth, async (req, res) => {
++  try {
++    const { listActivityEvents } = require('./vocabActivityService');
++    const days = Number(req.query.days) || 7;
++    const classId = req.query.classId ? String(req.query.classId) : '';
++    res.json(await listActivityEvents({ days: days, classId: classId || undefined }));
++  } catch (e) {
++    console.error('GET /teacher/activity', e);
++    res.status(500).json({ error: e.message || 'Server error' });
++  }
++});
++
+ router.post('/vocab/student/:studentId/grant-reward', requireTeacherAuth, async (req, res) => {
+   try {
+     const body = req.body || {};
+diff --git a/server/src/studentPortalService.js b/server/src/studentPortalService.js
+index 54a7493..7cfb396 100644
+--- a/server/src/studentPortalService.js
++++ b/server/src/studentPortalService.js
+@@ -202,6 +202,18 @@ async function studentLogin(loginId, password) {
+   const student = await findStudentByLogin(loginId, password);
+   const classNames = await getClassNameMap();
+   const token = signStudentToken(student);
++  let decayWarning = false;
++  try {
++    const { getStudentState, syncInactivityDecay } = require('./vocabLearningService');
++    const state = await getStudentState(student.studentId);
++    if (state && state.placement_at) {
++      const decay = await syncInactivityDecay(student.studentId, state);
++      // Warning only after the 3-day grace — never demote inside grace.
++      decayWarning = !!decay.decayWarning;
++    }
++  } catch (e) {
++    console.warn('studentLogin decay check', e.message || e);
++  }
+   return {
+     token,
+     student: {
+@@ -209,7 +221,9 @@ async function studentLogin(loginId, password) {
+       name: student.name,
+       classId: student.classId,
+       className: classNames[student.classId] || student.classId
+-    }
++    },
++    decay_warning: decayWarning,
++    decayWarning: decayWarning
+   };
+ }
+ 
+@@ -294,6 +308,18 @@ async function getStudentDashboard(studentId, classId) {
+     }
+   });
+ 
++  let decayWarning = false;
++  try {
++    const { getStudentState, syncInactivityDecay } = require('./vocabLearningService');
++    const state = await getStudentState(studentId);
++    if (state && state.placement_at) {
++      const decay = await syncInactivityDecay(studentId, state);
++      decayWarning = !!decay.decayWarning;
++    }
++  } catch (e) {
++    console.warn('dashboard decay check', e.message || e);
++  }
++
+   return {
+     profile: {
+       id: studentId,
+@@ -324,7 +350,9 @@ async function getStudentDashboard(studentId, classId) {
+     chambit,
+     dollars,
+     makeup,
+-    luckyDraw
++    luckyDraw,
++    decay_warning: decayWarning,
++    decayWarning: decayWarning
+   };
+ }
+ 
+diff --git a/server/src/vocabActivityService.js b/server/src/vocabActivityService.js
+new file mode 100644
+index 0000000..df4a254
+--- /dev/null
++++ b/server/src/vocabActivityService.js
+@@ -0,0 +1,75 @@
++/**
++ * Append-only Vocab / portal activity events for the teacher Activity feed.
++ */
++const { isSupabaseEnabled, getSupabase } = require('./supabaseClient');
++
++function newEventId(kind) {
++  return (
++    'ACT_' +
++    String(kind || 'event').slice(0, 12) +
++    '_' +
++    Date.now().toString(36) +
++    '_' +
++    Math.random().toString(36).slice(2, 8)
++  );
++}
++
++async function logVocabActivity(evt) {
++  if (!isSupabaseEnabled()) return null;
++  const db = getSupabase();
++  const row = {
++    id: evt.id || newEventId(evt.kind),
++    at: evt.at || new Date().toISOString(),
++    class_id: evt.classId ? String(evt.classId) : null,
++    student_id: String(evt.studentId || ''),
++    student_name: evt.studentName ? String(evt.studentName) : null,
++    kind: String(evt.kind || 'event'),
++    title: String(evt.title || ''),
++    detail: String(evt.detail || ''),
++    meta: evt.meta && typeof evt.meta === 'object' ? evt.meta : {}
++  };
++  if (!row.student_id) return null;
++  const { error } = await db.from('vocab_activity_events').insert(row);
++  if (error) {
++    console.warn('logVocabActivity', error.message || error);
++    return null;
++  }
++  return row;
++}
++
++async function listActivityEvents(opts) {
++  opts = opts || {};
++  if (!isSupabaseEnabled()) return { since: null, count: 0, events: [] };
++  const db = getSupabase();
++  const days = Math.max(1, Math.min(60, Number(opts.days) || 7));
++  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
++  let q = db
++    .from('vocab_activity_events')
++    .select('*')
++    .gte('at', since)
++    .order('at', { ascending: false })
++    .limit(Math.max(1, Math.min(500, Number(opts.limit) || 200)));
++  if (opts.classId) q = q.eq('class_id', String(opts.classId));
++  const { data, error } = await q;
++  if (error) throw new Error(error.message);
++  const events = (data || []).map(function (r) {
++    return {
++      id: r.id,
++      at: r.at,
++      classId: r.class_id,
++      studentId: r.student_id,
++      studentName: r.student_name,
++      kind: r.kind,
++      title: r.title,
++      detail: r.detail,
++      meta: r.meta || {}
++    };
++  });
++  return { since: since, count: events.length, events: events };
++}
++
++module.exports = {
++  logVocabActivity,
++  listActivityEvents,
++  newEventId
++};
+diff --git a/server/src/vocabLearningService.js b/server/src/vocabLearningService.js
+index 1559b21..0626e5e 100644
+--- a/server/src/vocabLearningService.js
++++ b/server/src/vocabLearningService.js
+@@ -9,6 +9,14 @@ const { isSupabaseEnabled, getSupabase } = require('./supabaseClient');
+ const { getEnrolledStudents } = require('./homeworkService');
+ const { tierForGrade, GRADE_MIN, GRADE_MAX } = require('./vocabPlacementService');
+ const { applyDollarAdjustment } = require('./dollarService');
++const {
++  PROMOTION_SCORE_MAX,
++  todaySeoul,
++  applyAttemptToLadder,
++  applyInactivityDecay,
++  clampScore
++} = require('./vocabPromotionService');
++const { logVocabActivity } = require('./vocabActivityService');
+ 
+ const DEFAULT_DAILY_TARGET = 10;
+ const DEFAULT_PASS_THRESHOLD = 100;
+@@ -21,7 +29,7 @@ const RATING_START = 100;
+ const BOX_INTERVAL_DAYS = [0, 1, 3, 7, 14, 30];
+ const MAX_BOX = BOX_INTERVAL_DAYS.length - 1;
+ 
+-// rating_score kept on student state for display/legacy; no longer drives promote/demote.
++// rating_score kept for display/legacy. Live promote/demote uses promotion_score (0–400).
+ 
+ // Tier-scaled daily Dollar bonus, granted every day the quest is completed (on top of
+ // the existing Lucky Draw ticket reward). Amount 0 skips the adjustment call.
+@@ -48,10 +56,65 @@ function requireDb() {
+ }
+ 
+ function todayStr() {
+-  // Server-local date is fine here; students only interact with "today" within one session.
+-  const d = new Date();
+-  const pad = n => (n < 10 ? '0' + n : String(n));
+-  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
++  // Always Seoul calendar day — Railway hosts run UTC; local Date() caused
++  // off-by-one idle-day / quest_date bugs (false demotes inside the 3-day grace).
++  return todaySeoul();
++}
++
++async function lookupStudentName(studentId) {
++  try {
++    const { getStudentById } = require('./supabaseStudentService');
++    const profile = await getStudentById(studentId);
++    return profile && profile.name ? String(profile.name) : String(studentId);
++  } catch (e) {
++    return String(studentId);
++  }
++}
++
++/**
++ * Persist ladder fields + optional inactivity demote/promote activity.
++ * Returns the decay result (always), and writes only when changed.
++ */
++async function syncInactivityDecay(studentId, state) {
++  const decay = applyInactivityDecay(state || {});
++  if (!decay.changed) return decay;
++  const db = requireDb();
++  const row = {
++    student_id: String(studentId),
++    grade_level: decay.gradeLevel,
++    tier_name: decay.tierName,
++    promotion_score: decay.promotionScore,
++    shield_count: decay.shieldCount,
++    last_active_at: new Date().toISOString(),
++    updated_at: new Date().toISOString()
++  };
++  const { error } = await db.from('vocab_student_state').upsert(row, { onConflict: 'student_id' });
++  if (error) throw new Error(error.message);
++  if (decay.demoted === 'down') {
++    const fromGrade = Math.round(Number(state && state.grade_level) || decay.gradeLevel + 1);
++    const fromTier = (state && state.tier_name) || tierForGrade(fromGrade).name;
++    try {
++      await logVocabActivity({
++        classId: state && state.class_id,
++        studentId: studentId,
++        studentName: await lookupStudentName(studentId),
++        kind: 'vocab_demote',
++        title: 'Demoted to ' + decay.tierName,
++        detail: fromTier + ' (G' + fromGrade + ') → ' + decay.tierName + ' (G' + decay.gradeLevel + ')',
++        meta: {
++          toTier: decay.tierName,
++          toGrade: decay.gradeLevel,
++          fromTier: fromTier,
++          fromGrade: fromGrade,
++          reason: 'inactivity_decay',
++          idleDays: decay.idleDays
++        }
++      });
++    } catch (e) {
++      console.warn('logVocabActivity demote', e.message || e);
++    }
++  }
++  return decay;
+ }
+ 
+ function daysBetween(a, b) {
+@@ -398,18 +461,40 @@ async function savePlacementResult(studentId, classId, result) {
+   const db = requireDb();
+   studentId = String(studentId);
+   classId = classId ? String(classId) : null;
++  const grade = Math.round(result.gradeLevel);
++  const tierName = result.tier && result.tier.name;
+   const row = {
+     student_id: studentId,
+     class_id: classId,
+-    grade_level: Math.round(result.gradeLevel),
+-    tier_name: result.tier && result.tier.name,
++    grade_level: grade,
++    tier_name: tierName,
+     rating_score: RATING_START,
++    promotion_score: 0,
++    shield_count: 0,
+     placement_accuracy: result.accuracy,
+     placement_at: new Date().toISOString(),
++    last_active_at: new Date().toISOString(),
+     updated_at: new Date().toISOString()
+   };
+   const { error } = await db.from('vocab_student_state').upsert(row, { onConflict: 'student_id' });
+   if (error) throw new Error(error.message);
++  try {
++    await logVocabActivity({
++      classId: classId,
++      studentId: studentId,
++      studentName: await lookupStudentName(studentId),
++      kind: 'vocab_placement',
++      title: 'Placement finished → ' + (tierName || tierForGrade(grade).name),
++      detail: 'Accuracy ' + (result.accuracy != null ? result.accuracy : '—') + '% · Grade ' + grade,
++      meta: {
++        tierName: tierName || tierForGrade(grade).name,
++        gradeLevel: grade,
++        accuracy: result.accuracy
++      }
++    });
++  } catch (e) {
++    console.warn('logVocabActivity placement', e.message || e);
++  }
+   return { ok: true };
+ }
+ 
+@@ -768,6 +853,7 @@ async function applyMasteryPromotion(studentId) {
+ async function recordDailyTestResult(studentId, classId, correctCount, totalCount) {
+   const db = requireDb();
+   studentId = String(studentId);
++  classId = classId ? String(classId) : null;
+   const settings = await getClassSettings(classId);
+   const state = await getStudentState(studentId);
+   if (!state || !state.placement_at) {
+@@ -777,30 +863,60 @@ async function recordDailyTestResult(studentId, classId, correctCount, totalCoun
+   }
+   const daily = await getOrCreateDailyProgress(studentId, classId, settings.daily_target);
+   const total = Math.max(1, Number(totalCount) || 0);
+-  const score = Math.round((Math.max(0, Number(correctCount) || 0) / total) * 1000) / 10;
++  const correct = Math.max(0, Math.min(total, Number(correctCount) || 0));
++  const score = Math.round((correct / total) * 1000) / 10;
+   const passed = score >= settings.pass_threshold;
+   const maxSessions = Math.max(1, Number(settings.max_daily_sessions) || DEFAULT_MAX_DAILY_SESSIONS);
+   const sessionsBefore = Math.max(0, Number(daily.sessions_completed) || 0);
+ 
++  // 0–400 ladder on EVERY submit (pass or fail). 7/10 → +6, never demotes alone.
++  const ladder = applyAttemptToLadder(state, correct, total);
++  const attemptEntry = {
++    at: new Date().toISOString(),
++    correctCount: correct,
++    totalCount: total,
++    score: score,
++    passed: passed,
++    scoreDelta: ladder.scoreDelta,
++    beforeScore: ladder.beforeScore,
++    afterScore: ladder.afterScore,
++    promoted: ladder.promoted,
++    demoted: ladder.demoted,
++    gradeLevel: ladder.gradeLevel,
++    tierName: ladder.tierName
++  };
++  const prevLog = Array.isArray(daily.test_attempt_log) ? daily.test_attempt_log : [];
++  const attemptLog = prevLog.concat([attemptEntry]).slice(-50);
++
+   const update = {
+     test_attempts: (daily.test_attempts || 0) + 1,
+     test_score: score,
+     test_passed: !!daily.test_passed || passed,
++    test_attempt_log: attemptLog,
+     updated_at: new Date().toISOString()
+   };
+ 
+   let reward = null;
+   let dollarBonus = null;
+   let streakInfo = null;
+-  let ratingUpdate = null;
+   let sessionsCompleted = sessionsBefore;
+ 
++  const statePatch = {
++    student_id: studentId,
++    class_id: classId || state.class_id || null,
++    grade_level: ladder.gradeLevel,
++    tier_name: ladder.tierName,
++    promotion_score: ladder.promotionScore,
++    shield_count: ladder.shieldCount,
++    last_active_at: new Date().toISOString(),
++    updated_at: new Date().toISOString()
++  };
++
+   if (passed) {
+     sessionsCompleted = sessionsBefore + 1;
+     update.sessions_completed = sessionsCompleted;
+     update.completed_at = daily.completed_at || new Date().toISOString();
+ 
+-    // Every passed set earns Lucky Draw + tier dollar bonus (up to max sessions/day).
+     try {
+       reward = await grantDailyReward(classId, studentId);
+       update.reward_ticket_id = reward.ticketId;
+@@ -808,44 +924,171 @@ async function recordDailyTestResult(studentId, classId, correctCount, totalCoun
+       console.error('grantDailyReward failed', e.message || e);
+     }
+     try {
+-      const tierName = state.tier_name || tierForGrade(state.grade_level).name;
+-      dollarBonus = await grantTierDollarBonus(classId, studentId, tierName);
++      dollarBonus = await grantTierDollarBonus(classId, studentId, ladder.tierName);
+     } catch (e) {
+       console.error('grantTierDollarBonus failed', e.message || e);
+     }
+-    // Streak still bumps once per calendar day.
+     if (sessionsBefore === 0) {
+       streakInfo = await bumpStreak(studentId, daily.quest_date);
+     }
++  }
+ 
++  const { error } = await db.from('vocab_daily_progress').update(update)
++    .eq('student_id', studentId).eq('quest_date', daily.quest_date);
++  if (error) throw new Error(error.message);
++
++  const { error: stateErr } = await db.from('vocab_student_state').upsert(statePatch, { onConflict: 'student_id' });
++  if (stateErr) throw new Error(stateErr.message);
++
++  const studentName = await lookupStudentName(studentId);
++  try {
++    await logVocabActivity({
++      classId: classId,
++      studentId: studentId,
++      studentName: studentName,
++      kind: 'vocab_set',
++      title: 'Vocab set ' + (passed ? 'completed' : 'attempted'),
++      detail:
++        correct +
++        '/' +
++        total +
++        ' correct (' +
++        score +
++        '%) · delta ' +
++        (ladder.scoreDelta >= 0 ? '+' : '') +
++        ladder.scoreDelta +
++        ' · ' +
++        daily.quest_date,
++      meta: {
++        questDate: daily.quest_date,
++        correctCount: correct,
++        totalCount: total,
++        testScore: score,
++        passed: passed,
++        scoreDelta: ladder.scoreDelta,
++        beforeScore: ladder.beforeScore,
++        afterScore: ladder.afterScore,
++        sessionsCompleted: sessionsCompleted,
++        rewardTicketId: reward && reward.ticketId
++      }
++    });
++  } catch (e) {
++    console.warn('logVocabActivity vocab_set', e.message || e);
++  }
++
++  if (ladder.promoted === 'up') {
++    const fromGrade = clampGrade(state.grade_level);
+     try {
+-      ratingUpdate = await applyMasteryPromotion(studentId);
++      await logVocabActivity({
++        classId: classId,
++        studentId: studentId,
++        studentName: studentName,
++        kind: 'vocab_promote',
++        title: 'Promoted to ' + ladder.tierName,
++        detail:
++          (state.tier_name || tierForGrade(fromGrade).name) +
++          ' (G' +
++          fromGrade +
++          ') → ' +
++          ladder.tierName +
++          ' (G' +
++          ladder.gradeLevel +
++          ')',
++        meta: {
++          toTier: ladder.tierName,
++          toGrade: ladder.gradeLevel,
++          fromTier: state.tier_name || tierForGrade(fromGrade).name,
++          fromGrade: fromGrade
++        }
++      });
+     } catch (e) {
+-      console.error('applyMasteryPromotion failed', e.message || e);
++      console.warn('logVocabActivity promote', e.message || e);
++    }
++  }
++  if (ladder.demoted === 'down') {
++    const fromGrade = clampGrade(state.grade_level);
++    try {
++      await logVocabActivity({
++        classId: classId,
++        studentId: studentId,
++        studentName: studentName,
++        kind: 'vocab_demote',
++        title: 'Demoted to ' + ladder.tierName,
++        detail:
++          (state.tier_name || tierForGrade(fromGrade).name) +
++          ' (G' +
++          fromGrade +
++          ') → ' +
++          ladder.tierName +
++          ' (G' +
++          ladder.gradeLevel +
++          ')',
++        meta: {
++          toTier: ladder.tierName,
++          toGrade: ladder.gradeLevel,
++          fromTier: state.tier_name || tierForGrade(fromGrade).name,
++          fromGrade: fromGrade,
++          reason: 'test_score',
++          correctCount: correct,
++          totalCount: total,
++          testScore: score,
++          scoreDelta: ladder.scoreDelta
++        }
++      });
++    } catch (e) {
++      console.warn('logVocabActivity demote', e.message || e);
+     }
+   }
+ 
+-  const { error } = await db.from('vocab_daily_progress').update(update)
+-    .eq('student_id', studentId).eq('quest_date', daily.quest_date);
+-  if (error) throw new Error(error.message);
++  let mastery = null;
++  try {
++    mastery = await getTierMastery(studentId, ladder.gradeLevel);
++  } catch (e) {
++    console.warn('getTierMastery', e.message || e);
++  }
++
++  const promotion = {
++    promotionScore: ladder.promotionScore,
++    promotionScoreMax: PROMOTION_SCORE_MAX,
++    promotionPercent: Math.round((ladder.promotionScore / PROMOTION_SCORE_MAX) * 1000) / 10,
++    remainingToPromote: Math.max(0, PROMOTION_SCORE_MAX - ladder.promotionScore),
++    shieldCount: ladder.shieldCount,
++    scoreDelta: ladder.scoreDelta,
++    delta: ladder.scoreDelta,
++    beforeScore: ladder.beforeScore,
++    afterScore: ladder.afterScore,
++    gradeLevel: ladder.gradeLevel,
++    tierName: ladder.tierName,
++    promoted: ladder.promoted,
++    demoted: ladder.demoted,
++    mastery: mastery
++  };
+ 
+   return {
+     passed,
+     score,
+     threshold: settings.pass_threshold,
++    correctCount: correct,
++    totalCount: total,
+     reward,
+     dollarBonus,
+-    rating: ratingUpdate,
+-    mastery: ratingUpdate && ratingUpdate.mastery,
++    rating: promotion,
++    promotion: promotion,
++    mastery: mastery,
+     streak: streakInfo,
+     alreadyPassedToday: sessionsBefore >= 1,
+     sessionsCompleted: sessionsCompleted,
+     maxSessions: maxSessions,
+     canStartAnother: sessionsCompleted < maxSessions,
+-    rewardClaimedToday: false
++    rewardClaimedToday: false,
++    attemptLog: attemptLog
+   };
+ }
+ 
++function clampGrade(n) {
++  return Math.max(GRADE_MIN, Math.min(GRADE_MAX, Math.round(Number(n) || GRADE_MIN)));
++}
++
+ async function bumpStreak(studentId, questDate) {
+   const db = requireDb();
+   const state = await getStudentState(studentId) || {};
+@@ -873,11 +1116,23 @@ async function bumpStreak(studentId, questDate) {
+ 
+ async function getStudentVocabSummary(studentId, classId) {
+   const settings = await getClassSettings(classId);
+-  const state = await getStudentState(studentId);
++  let state = await getStudentState(studentId);
++  let decayWarning = false;
++  if (state && state.placement_at) {
++    try {
++      const decay = await syncInactivityDecay(studentId, state);
++      decayWarning = !!decay.decayWarning;
++      if (decay.changed) state = await getStudentState(studentId);
++    } catch (e) {
++      console.warn('syncInactivityDecay', e.message || e);
++    }
++  }
+   const daily = await getOrCreateDailyProgress(studentId, classId, settings.daily_target);
+   const placed = !!(state && state.placement_at);
+   const sessionsCompleted = Math.max(0, Number(daily.sessions_completed) || 0);
+   const maxSessions = Math.max(1, Number(settings.max_daily_sessions) || DEFAULT_MAX_DAILY_SESSIONS);
++  const promoScore = placed ? clampScore(state.promotion_score) : 0;
++  const shieldCount = placed ? Math.max(0, Math.round(Number(state.shield_count) || 0)) : 0;
+   let mastery = null;
+   if (placed) {
+     try {
+@@ -896,10 +1151,18 @@ async function getStudentVocabSummary(studentId, classId) {
+   }
+   const { placementStartAbility } = require('./vocabPlacementService');
+   const placementStartGrade = placementStartAbility(schoolGrade);
++  const attemptLog = Array.isArray(daily.test_attempt_log) ? daily.test_attempt_log : [];
+   return {
+     tierName: placed ? state.tier_name : null,
+     gradeLevel: placed ? state.grade_level : null,
+     ratingScore: placed ? state.rating_score : null,
++    promotionScore: promoScore,
++    promotionScoreMax: PROMOTION_SCORE_MAX,
++    promotionPercent: Math.round((promoScore / PROMOTION_SCORE_MAX) * 1000) / 10,
++    remainingToPromote: Math.max(0, PROMOTION_SCORE_MAX - promoScore),
++    shieldCount: shieldCount,
++    lastActiveAt: state && state.last_active_at,
++    decayWarning: decayWarning,
+     streakDays: (state && state.streak_days) || 0,
+     longestStreak: (state && state.longest_streak) || 0,
+     placementDone: placed,
+@@ -917,7 +1180,8 @@ async function getStudentVocabSummary(studentId, classId) {
+       testScore: daily.test_score,
+       sessionsCompleted: sessionsCompleted,
+       maxSessions: maxSessions,
+-      canStartAnother: sessionsCompleted < maxSessions
++      canStartAnother: sessionsCompleted < maxSessions,
++      attemptLog: attemptLog
+     },
+     settings: {
+       dailyTarget: settings.daily_target,
+@@ -1080,19 +1344,26 @@ async function getClassOverview(classId) {
+     const st = stateById.get(String(s.id));
+     const d = dailyById.get(String(s.id));
+     const placed = !!(st && st.placement_at);
++    const promo = placed ? clampScore(st.promotion_score) : 0;
+     return {
+       studentId: s.id,
+       name: s.name,
+       tierName: placed ? st.tier_name : null,
+       gradeLevel: placed ? st.grade_level : null,
+       ratingScore: placed ? st.rating_score : null,
++      promotionScore: promo,
++      promotionScoreMax: PROMOTION_SCORE_MAX,
++      promotionPercent: Math.round((promo / PROMOTION_SCORE_MAX) * 1000) / 10,
++      shieldCount: placed ? Math.max(0, Math.round(Number(st.shield_count) || 0)) : 0,
+       streakDays: st ? st.streak_days : 0,
+       longestStreak: st ? st.longest_streak : 0,
+       placementAt: st ? st.placement_at : null,
+       todayStudied: d ? d.studied_count : 0,
+       todayTarget: d ? d.target_count : settings.daily_target,
+       todayTestPassed: d ? !!d.test_passed : false,
+-      todayTestScore: d ? d.test_score : null
++      todayTestScore: d ? d.test_score : null,
++      todayTestAttempts: d ? d.test_attempts : 0,
++      todayAttemptLog: d && Array.isArray(d.test_attempt_log) ? d.test_attempt_log : []
+     };
+   });
+ 
+@@ -1110,14 +1381,34 @@ async function overrideStudentState(studentId, opts) {
+     patch.rating_score = RATING_START;
+     patch.tier_name = tierForGrade(grade).name;
+   }
+-  // Teacher grade override also unlocks Placement retake.
++  if (opts.promotionScore != null) {
++    patch.promotion_score = clampScore(opts.promotionScore);
++  } else if (opts.gradeLevel != null) {
++    // Grade move without an explicit score: keep current score if any, else 0.
++    // (Production previously hard-reset to 0 — avoid wiping a fair ladder position
++    // unless the teacher also clears placement.)
++    if (opts.resetPlacement !== false) patch.promotion_score = 0;
++  }
++  if (opts.shieldCount != null) {
++    patch.shield_count = Math.max(0, Math.round(Number(opts.shieldCount) || 0));
++  }
++  // Teacher grade override also unlocks Placement retake unless told not to.
+   if (opts.resetPlacement !== false) {
+     patch.placement_at = null;
+     patch.placement_accuracy = null;
++    if (opts.promotionScore == null) patch.promotion_score = 0;
++    patch.shield_count = 0;
+   }
+   const { error } = await db.from('vocab_student_state').upsert(patch, { onConflict: 'student_id' });
+   if (error) throw new Error(error.message);
+-  return { ok: true, placementReset: opts.resetPlacement !== false };
++  const next = await getStudentState(studentId);
++  return {
++    ok: true,
++    placementReset: opts.resetPlacement !== false,
++    gradeLevel: next && next.grade_level,
++    tierName: next && next.tier_name,
++    promotionScore: next ? clampScore(next.promotion_score) : 0
++  };
+ }
+ 
+ async function manualGrantReward(classId, studentId) {
+@@ -1208,5 +1499,6 @@ module.exports = {
+   wordIdForWord,
+   getTierMastery,
+   applyMasteryPromotion,
+-  buildPlacementItem
++  buildPlacementItem,
++  syncInactivityDecay
+ };
+diff --git a/server/src/vocabPromotionService.js b/server/src/vocabPromotionService.js
+new file mode 100644
+index 0000000..e245661
+--- /dev/null
++++ b/server/src/vocabPromotionService.js
+@@ -0,0 +1,229 @@
++/**
++ * Vocab Booster promotion ladder (0–400) + inactivity decay.
++ *
++ * Rules:
++ *  - Every daily-test submit (pass or fail) adjusts score:
++ *      delta = (correctCount - totalCount / 2) * 3
++ *    (10-question set: 70% → +6, 100% → +15, 0% → −15)
++ *  - Score ≥ 400 → promote one grade, score resets to 0, shield = 20
++ *  - Score would go ≤ 0 with no shield → demote one grade, re-entry at 390
++ *  - Shield blocks demotion; each submit burns 10 shield while held
++ *  - Inactivity decay: NO score loss for the first DECAY_GRACE_DAYS (3) Seoul
++ *    calendar days without a completed set. Decay only starts on day 4+.
++ *  - Decay / demote-from-idle must NOT run inside the grace window (the bug
++ *    that demoted Arthur after 1 idle day).
++ */
++const { tierForGrade, GRADE_MIN, GRADE_MAX } = require('./vocabPlacementService');
++
++const SEOUL_TZ = 'Asia/Seoul';
++const PROMOTION_SCORE_MAX = 400;
++const DEMOTE_REENTRY_SCORE = 390;
++const SHIELD_ON_PROMOTE = 20;
++const SHIELD_BURN_PER_SUBMIT = 10;
++/** Full Seoul calendar days of inactivity with zero score penalty. */
++const DECAY_GRACE_DAYS = 3;
++/** Points lost per idle day after the grace window (applied on read/login). */
++const DECAY_POINTS_PER_IDLE_DAY = 15;
++
++function formatSeoulDate(value) {
++  if (value == null || value === '') return '';
++  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
++    return value.trim();
++  }
++  const d = value instanceof Date ? value : new Date(value);
++  if (isNaN(d.getTime())) return String(value).slice(0, 10);
++  return d.toLocaleDateString('en-CA', { timeZone: SEOUL_TZ });
++}
++
++function clampScore(n) {
++  const x = Math.round(Number(n) || 0);
++  return Math.max(0, Math.min(PROMOTION_SCORE_MAX, x));
++}
++
++function clampGrade(n) {
++  return Math.max(GRADE_MIN, Math.min(GRADE_MAX, Math.round(Number(n) || GRADE_MIN)));
++}
++
++function todaySeoul() {
++  return formatSeoulDate(new Date());
++}
++
++function daysBetweenSeoul(a, b) {
++  if (!a || !b) return null;
++  const MS = 24 * 60 * 60 * 1000;
++  const da = new Date(String(a).slice(0, 10) + 'T12:00:00');
++  const db = new Date(String(b).slice(0, 10) + 'T12:00:00');
++  if (isNaN(da.getTime()) || isNaN(db.getTime())) return null;
++  return Math.round((db - da) / MS);
++}
++
++/**
++ * Score delta for one daily-test submit.
++ * Positive when above 50% accuracy — a 7/10 (+6) must never demote by itself.
++ */
++function scoreDeltaForAttempt(correctCount, totalCount) {
++  const total = Math.max(1, Number(totalCount) || 0);
++  const correct = Math.max(0, Math.min(total, Number(correctCount) || 0));
++  return Math.round((correct - total / 2) * 3);
++}
++
++function idleDaysSince(lastCompletedDate, today) {
++  const day = today || todaySeoul();
++  if (!lastCompletedDate) {
++    // Never completed a set after placement — treat placement day via caller.
++    return null;
++  }
++  const gap = daysBetweenSeoul(String(lastCompletedDate).slice(0, 10), day);
++  if (gap == null) return null;
++  return Math.max(0, gap);
++}
++
++/**
++ * Apply promotion-score change from a test attempt.
++ * @returns {{ gradeLevel, tierName, promotionScore, shieldCount, scoreDelta, promoted, demoted, beforeScore, afterScore }}
++ */
++function applyAttemptToLadder(state, correctCount, totalCount) {
++  const beforeScore = clampScore(state && state.promotion_score);
++  let grade = clampGrade(state && state.grade_level);
++  let shield = Math.max(0, Math.round(Number(state && state.shield_count) || 0));
++  const delta = scoreDeltaForAttempt(correctCount, totalCount);
++  let score = beforeScore + delta;
++  let promoted = null;
++  let demoted = null;
++
++  if (shield > 0) {
++    shield = Math.max(0, shield - SHIELD_BURN_PER_SUBMIT);
++  }
++
++  if (score >= PROMOTION_SCORE_MAX && grade < GRADE_MAX) {
++    grade += 1;
++    score = 0;
++    shield = SHIELD_ON_PROMOTE;
++    promoted = 'up';
++  } else if (score <= 0) {
++    if (shield > 0) {
++      // Shield absorbs the demotion; park at 0 until next climb.
++      score = 0;
++    } else if (grade > GRADE_MIN) {
++      grade -= 1;
++      score = DEMOTE_REENTRY_SCORE;
++      demoted = 'down';
++    } else {
++      score = 0;
++    }
++  } else {
++    score = clampScore(score);
++  }
++
++  const tier = tierForGrade(grade);
++  return {
++    gradeLevel: grade,
++    tierName: tier.name,
++    promotionScore: clampScore(score),
++    shieldCount: shield,
++    scoreDelta: delta,
++    promoted: promoted,
++    demoted: demoted,
++    beforeScore: beforeScore,
++    afterScore: clampScore(score)
++  };
++}
++
++/**
++ * Inactivity decay. Returns null when grace still covers the student
++ * (idleDays <= DECAY_GRACE_DAYS) — no score change, no demote.
++ *
++ * After grace, each extra idle day beyond grace subtracts DECAY_POINTS_PER_IDLE_DAY.
++ * Demote only if score hits ≤0 with no shield — same re-entry rule as attempts.
++ */
++function applyInactivityDecay(state, today) {
++  const day = today || todaySeoul();
++  const last = state && (state.last_completed_date || state.lastCompletedDate);
++  let idle = idleDaysSince(last, day);
++
++  // If they never completed a set, fall back to placement date (Seoul day).
++  if (idle == null && state && state.placement_at) {
++    const placedDay = formatSeoulDate(state.placement_at);
++    idle = idleDaysSince(placedDay, day);
++  }
++  if (idle == null) idle = 0;
++
++  const withinGrace = idle <= DECAY_GRACE_DAYS;
++  const decayWarning = idle > DECAY_GRACE_DAYS;
++
++  if (withinGrace || idle <= 0) {
++    return {
++      changed: false,
++      withinGrace: true,
++      idleDays: idle,
++      decayWarning: false,
++      gradeLevel: clampGrade(state && state.grade_level),
++      tierName: (state && state.tier_name) || tierForGrade(clampGrade(state && state.grade_level)).name,
++      promotionScore: clampScore(state && state.promotion_score),
++      shieldCount: Math.max(0, Math.round(Number(state && state.shield_count) || 0)),
++      demoted: null,
++      scoreDelta: 0
++    };
++  }
++
++  const penalizedDays = idle - DECAY_GRACE_DAYS;
++  const loss = penalizedDays * DECAY_POINTS_PER_IDLE_DAY;
++  const beforeScore = clampScore(state && state.promotion_score);
++  let score = beforeScore - loss;
++  let grade = clampGrade(state && state.grade_level);
++  let shield = Math.max(0, Math.round(Number(state && state.shield_count) || 0));
++  let demoted = null;
++  let scoreDelta = -loss;
++
++  if (score <= 0) {
++    if (shield > 0) {
++      score = 0;
++      // Burn one shield charge for the decay hit instead of demoting.
++      shield = Math.max(0, shield - SHIELD_BURN_PER_SUBMIT);
++    } else if (grade > GRADE_MIN) {
++      grade -= 1;
++      score = DEMOTE_REENTRY_SCORE;
++      demoted = 'down';
++    } else {
++      score = 0;
++    }
++  }
++
++  const tier = tierForGrade(grade);
++  const changed =
++    demoted != null ||
++    clampScore(score) !== beforeScore ||
++    grade !== clampGrade(state && state.grade_level) ||
++    shield !== Math.max(0, Math.round(Number(state && state.shield_count) || 0));
++
++  return {
++    changed: changed,
++    withinGrace: false,
++    idleDays: idle,
++    decayWarning: decayWarning,
++    gradeLevel: grade,
++    tierName: tier.name,
++    promotionScore: clampScore(score),
++    shieldCount: shield,
++    demoted: demoted,
++    scoreDelta: scoreDelta,
++    beforeScore: beforeScore,
++    afterScore: clampScore(score)
++  };
++}
++
++module.exports = {
++  PROMOTION_SCORE_MAX,
++  DEMOTE_REENTRY_SCORE,
++  SHIELD_ON_PROMOTE,
++  SHIELD_BURN_PER_SUBMIT,
++  DECAY_GRACE_DAYS,
++  DECAY_POINTS_PER_IDLE_DAY,
++  clampScore,
++  todaySeoul,
++  daysBetweenSeoul,
++  scoreDeltaForAttempt,
++  idleDaysSince,
++  applyAttemptToLadder,
++  applyInactivityDecay
++};
+diff --git a/server/supabase/migrations/019_vocab_promotion_ladder.sql b/server/supabase/migrations/019_vocab_promotion_ladder.sql
+new file mode 100644
+index 0000000..63bd05c
+--- /dev/null
++++ b/server/supabase/migrations/019_vocab_promotion_ladder.sql
+@@ -0,0 +1,33 @@
++-- Vocab Booster promotion ladder (0-400) + attempt history + activity feed.
++-- Safe to re-run.
++
++ALTER TABLE vocab_student_state
++  ADD COLUMN IF NOT EXISTS promotion_score INTEGER NOT NULL DEFAULT 0
++    CHECK (promotion_score >= 0 AND promotion_score <= 400),
++  ADD COLUMN IF NOT EXISTS shield_count INTEGER NOT NULL DEFAULT 0
++    CHECK (shield_count >= 0),
++  ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ;
++
++ALTER TABLE vocab_daily_progress
++  ADD COLUMN IF NOT EXISTS test_attempt_log JSONB NOT NULL DEFAULT '[]'::jsonb;
++
++CREATE TABLE IF NOT EXISTS vocab_activity_events (
++  id           TEXT PRIMARY KEY,
++  at           TIMESTAMPTZ NOT NULL DEFAULT now(),
++  class_id     TEXT,
++  student_id   TEXT NOT NULL,
++  student_name TEXT,
++  kind         TEXT NOT NULL,
++  title        TEXT NOT NULL DEFAULT '',
++  detail       TEXT NOT NULL DEFAULT '',
++  meta         JSONB NOT NULL DEFAULT '{}'::jsonb
++);
++
++CREATE INDEX IF NOT EXISTS vocab_activity_events_at_idx
++  ON vocab_activity_events (at DESC);
++CREATE INDEX IF NOT EXISTS vocab_activity_events_class_at_idx
++  ON vocab_activity_events (class_id, at DESC);
++CREATE INDEX IF NOT EXISTS vocab_activity_events_student_at_idx
++  ON vocab_activity_events (student_id, at DESC);
++
++ALTER TABLE vocab_activity_events ENABLE ROW LEVEL SECURITY;
+-- 
+2.43.0
+
