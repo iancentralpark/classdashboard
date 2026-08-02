@@ -1,0 +1,508 @@
+From 4976bae3f991aee1c24af84a27caf84229b04b77 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sun, 2 Aug 2026 00:11:46 +0000
+Subject: [PATCH] Restore Vocab Booster branding wiped by Aug 1 Railway
+ redeploy.
+
+Live 2026-07-31.26 had Vocab Booster + two-line Virtual Mr. Park nav;
+railway up from an older git tree overwrote Student/Teacher HTML.
+Also keep Vocab Booster off Home (vocab tab only).
+---
+ Index.html                      | 14 ++++++-------
+ Student.html                    | 29 +++++++++++++++-----------
+ server/public/Student.html      | 37 +++++++++++++++++++--------------
+ server/public/Teacher.html      | 16 +++++++-------
+ server/public/sw.js             |  2 +-
+ server/scripts/build-public.js  |  2 +-
+ server/src/routes.js            |  2 +-
+ server/teacher-src/Index.html   | 14 ++++++-------
+ server/teacher-src/Student.html | 29 +++++++++++++++-----------
+ 9 files changed, 80 insertions(+), 65 deletions(-)
+
+diff --git a/Index.html b/Index.html
+index 378be1b..e406eae 100644
+--- a/Index.html
++++ b/Index.html
+@@ -6203,10 +6203,10 @@
+                     <i class="fa-solid fa-key"></i> Portal logins
+                 </button>
+                 <button type="button" class="btn btn-sm btn-outline-info rounded-pill px-3" id="vocabLmsBtn">
+-                    <i class="fa-solid fa-layer-group"></i> Vocab Monitor
++                    <i class="fa-solid fa-rocket"></i> Vocab Booster
+                 </button>
+                 <button type="button" class="btn btn-sm btn-outline-primary rounded-pill px-3" id="vocabActivityBtn">
+-                    <i class="fa-solid fa-list-ul"></i> Vocab Activity
++                    <i class="fa-solid fa-list-ul"></i> Vocab Booster Log
+                 </button>
+                 <button type="button" class="btn btn-sm btn-warning rounded-pill px-3" id="openClassPendingBtn">
+                     <i class="fa-solid fa-hourglass-half"></i> Pending Homework
+@@ -6434,7 +6434,7 @@
+             <button type="button" class="teacher-more-btn" data-trigger-click="openReportBtn"><i class="fa-solid fa-chart-line"></i> Monthly Report</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassLogBtn"><i class="fa-solid fa-book-open"></i> Class Log</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassPendingBtn"><i class="fa-solid fa-hourglass-half"></i> Pending HW</button>
+-            <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-layer-group"></i> Vocab Monitor</button>
++            <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-rocket"></i> Vocab Booster</button>
+             <button type="button" class="teacher-more-btn" id="teacherMobileThemeBtn"><i class="fa-solid fa-moon"></i> Dark Mode</button>
+         </div>
+         <button type="button" class="btn btn-link btn-sm text-muted text-decoration-none px-0 mt-2 withdrawn-entry-link" data-trigger-click="openWithdrawnStudentsBtn">
+@@ -6993,12 +6993,12 @@
+     </div>
+ </div>
+ 
+-<!-- Vocab LMS: roster overview + word bank uploads + daily-quest settings -->
++<!-- Vocab Booster: roster overview + word bank uploads + daily-quest settings -->
+ <div class="modal fade app-modal" id="vocabLmsModal" tabindex="-1" aria-hidden="true">
+     <div class="modal-dialog modal-dialog-centered modal-xl modal-dialog-scrollable">
+         <div class="modal-content">
+             <div class="modal-header">
+-                <h5 class="modal-title"><i class="fa-solid fa-layer-group"></i> Vocab Monitor — <span id="vocabLmsClassName">Class</span></h5>
++                <h5 class="modal-title"><i class="fa-solid fa-rocket"></i> Vocab Booster — <span id="vocabLmsClassName">Class</span></h5>
+                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+             </div>
+             <div class="modal-body">
+@@ -7173,7 +7173,7 @@
+     <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+         <div class="modal-content">
+             <div class="modal-header">
+-                <h5 class="modal-title"><i class="fa-solid fa-list-ul"></i> Vocab Activity — <span id="vocabActivityClassName">Class</span></h5>
++                <h5 class="modal-title"><i class="fa-solid fa-list-ul"></i> Vocab Booster Log — <span id="vocabActivityClassName">Class</span></h5>
+                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+             </div>
+             <div class="modal-body">
+@@ -16742,7 +16742,7 @@
+             body: JSON.stringify({ dailyTarget: dailyTarget, passThreshold: passThreshold })
+         }).then(function(res) {
+             vocabLmsState.settings = res;
+-            appToast('Vocab settings saved.');
++            appToast('Vocab Booster settings saved.');
+         }).catch(function(err) {
+             appAlert(err.message || 'Could not save settings.');
+         });
+diff --git a/Student.html b/Student.html
+index 5b43db3..0a4e100 100644
+--- a/Student.html
++++ b/Student.html
+@@ -1786,6 +1786,14 @@
+                 cursor: pointer;
+             }
+         .mobile-nav-btn i { font-size: 1.25rem; }
++        .mobile-nav-label-2line {
++            display: flex;
++            flex-direction: column;
++            align-items: center;
++            line-height: 1.05;
++            font-size: 0.58rem;
++            letter-spacing: -0.01em;
++        }
+         .mobile-nav-btn.active {
+             color: var(--primary-dark);
+             background: linear-gradient(135deg, rgba(59, 158, 221, 0.12), rgba(255, 159, 67, 0.1));
+@@ -2177,12 +2185,12 @@
+             <div class="stats" id="statsGrid"></div>
+         </div>
+ 
+-        <div class="card portal-card-cute dashboard-card vocab-shell" data-panel="home" id="vocabShell">
+-            <div class="card-title"><i class="fa-solid fa-layer-group"></i> Words</div>
++        <div class="card portal-card-cute dashboard-card vocab-shell" data-panel="vocab" id="vocabShell">
++            <div class="card-title"><i class="fa-solid fa-rocket"></i> Vocab Booster</div>
+ 
+             <div id="vocabNeedsPlacement">
+                 <div class="vocab-hero">
+-                    <p class="vocab-kicker">Placement</p>
++                    <p class="vocab-kicker">Vocab Booster</p>
+                     <h2>Find your tier first</h2>
+                     <p>Take a short placement test once. Then today’s words appear here automatically.</p>
+                 </div>
+@@ -2410,10 +2418,11 @@
+         <span>Mr. Park</span>
+     </button>
+     <button type="button" class="mobile-nav-btn" data-mobile-tab="buddy">
+-        <i class="fa-solid fa-wand-magic-sparkles"></i><span>AI Buddy</span>
++        <i class="fa-solid fa-wand-magic-sparkles"></i>
++        <span class="mobile-nav-label-2line"><span>Virtual</span><span>Mr. Park</span></span>
+     </button>
+     <button type="button" class="mobile-nav-btn" data-mobile-tab="vocab">
+-        <i class="fa-solid fa-layer-group"></i><span>Words</span>
++        <i class="fa-solid fa-rocket"></i><span>Booster</span>
+     </button>
+     <button type="button" class="mobile-nav-btn" data-mobile-tab="more">
+         <i class="fa-solid fa-ellipsis"></i><span>More</span>
+@@ -2756,11 +2765,7 @@
+         );
+         document.querySelectorAll('.dashboard-card').forEach(function(card) {
+             var panel = card.getAttribute('data-panel');
+-            var show = panel === activeMobilePanel;
+-            if (card.id === 'vocabShell' && (activeMobilePanel === 'home' || activeMobilePanel === 'vocab')) {
+-                show = true;
+-            }
+-            card.classList.toggle('panel-active', show);
++            card.classList.toggle('panel-active', panel === activeMobilePanel);
+         });
+         if (activeMobilePanel === 'vocab') {
+             var shell = $('vocabShell');
+@@ -3293,7 +3298,7 @@
+ 
+         if (result) result.classList.remove('show');
+         if (doneBtn) doneBtn.classList.remove('show');
+-        if (title) title.textContent = opts.title || 'Vocab reward!';
++        if (title) title.textContent = opts.title || 'Vocab Booster reward!';
+         if (sub) sub.textContent = opts.sub || 'Tap into your Lucky Draw…';
+         buildLuckySpinIdleStrip();
+         overlay.classList.add('show');
+@@ -5467,7 +5472,7 @@
+         toggleId: 'buddyFloatToggle',
+         storageKey: BUDDY_FLOAT_SIZE_KEY,
+         collapsedKey: 'mrpark_buddy_float_collapsed',
+-        collapseLabel: 'Minimize AI Buddy',
++        collapseLabel: 'Minimize Virtual Mr. Park',
+         collapseTitle: 'Minimize',
+         expandLabel: 'Open Virtual Mr. Park',
+         expandTitle: 'Open Virtual Mr. Park'
+diff --git a/server/public/Student.html b/server/public/Student.html
+index 0a12c64..e5ba17d 100644
+--- a/server/public/Student.html
++++ b/server/public/Student.html
+@@ -11,7 +11,7 @@
+     </script>
+     <script>
+         (function() {
+-            var PORTAL_BUILD = '2026-08-01.09';
++            var PORTAL_BUILD = '2026-08-02.01';
+             window.PORTAL_BUILD = PORTAL_BUILD;
+             var KEY = 'mrpark_portal_build';
+             try {
+@@ -1932,6 +1932,14 @@
+                 cursor: pointer;
+             }
+         .mobile-nav-btn i { font-size: 1.25rem; }
++        .mobile-nav-label-2line {
++            display: flex;
++            flex-direction: column;
++            align-items: center;
++            line-height: 1.05;
++            font-size: 0.58rem;
++            letter-spacing: -0.01em;
++        }
+         .mobile-nav-btn.active {
+             color: var(--primary-dark);
+             background: linear-gradient(135deg, rgba(59, 158, 221, 0.12), rgba(255, 159, 67, 0.1));
+@@ -2271,9 +2279,9 @@
+             .stamp-mark { width: 54px; height: 54px; margin-left: -27px; margin-top: -27px; }
+         }
+     </style>
+-<link rel="stylesheet" href="/css/vocab-learn.css?v=2026-08-01.09">
+-<script src="/js/vocab-mock-data.js?v=2026-08-01.09" defer></script>
+-<script src="/js/vocab-learn.js?v=2026-08-01.09" defer></script>
++<link rel="stylesheet" href="/css/vocab-learn.css?v=2026-08-02.01">
++<script src="/js/vocab-mock-data.js?v=2026-08-02.01" defer></script>
++<script src="/js/vocab-learn.js?v=2026-08-02.01" defer></script>
+ </head>
+ <body>
+ <div class="wrap">
+@@ -2326,12 +2334,12 @@
+             <div class="stats" id="statsGrid"></div>
+         </div>
+ 
+-        <div class="card portal-card-cute dashboard-card vocab-shell" data-panel="home" id="vocabShell">
+-            <div class="card-title"><i class="fa-solid fa-layer-group"></i> Words</div>
++        <div class="card portal-card-cute dashboard-card vocab-shell" data-panel="vocab" id="vocabShell">
++            <div class="card-title"><i class="fa-solid fa-rocket"></i> Vocab Booster</div>
+ 
+             <div id="vocabNeedsPlacement">
+                 <div class="vocab-hero">
+-                    <p class="vocab-kicker">Placement</p>
++                    <p class="vocab-kicker">Vocab Booster</p>
+                     <h2>Find your tier first</h2>
+                     <p>Take a short placement test once. Then today’s words appear here automatically.</p>
+                 </div>
+@@ -2559,10 +2567,11 @@
+         <span>Mr. Park</span>
+     </button>
+     <button type="button" class="mobile-nav-btn" data-mobile-tab="buddy">
+-        <i class="fa-solid fa-wand-magic-sparkles"></i><span>AI Buddy</span>
++        <i class="fa-solid fa-wand-magic-sparkles"></i>
++        <span class="mobile-nav-label-2line"><span>Virtual</span><span>Mr. Park</span></span>
+     </button>
+     <button type="button" class="mobile-nav-btn" data-mobile-tab="vocab">
+-        <i class="fa-solid fa-layer-group"></i><span>Words</span>
++        <i class="fa-solid fa-rocket"></i><span>Booster</span>
+     </button>
+     <button type="button" class="mobile-nav-btn" data-mobile-tab="more">
+         <i class="fa-solid fa-ellipsis"></i><span>More</span>
+@@ -2905,11 +2914,7 @@
+         );
+         document.querySelectorAll('.dashboard-card').forEach(function(card) {
+             var panel = card.getAttribute('data-panel');
+-            var show = panel === activeMobilePanel;
+-            if (card.id === 'vocabShell' && (activeMobilePanel === 'home' || activeMobilePanel === 'vocab')) {
+-                show = true;
+-            }
+-            card.classList.toggle('panel-active', show);
++            card.classList.toggle('panel-active', panel === activeMobilePanel);
+         });
+         if (activeMobilePanel === 'vocab') {
+             var shell = $('vocabShell');
+@@ -3442,7 +3447,7 @@
+ 
+         if (result) result.classList.remove('show');
+         if (doneBtn) doneBtn.classList.remove('show');
+-        if (title) title.textContent = opts.title || 'Vocab reward!';
++        if (title) title.textContent = opts.title || 'Vocab Booster reward!';
+         if (sub) sub.textContent = opts.sub || 'Tap into your Lucky Draw…';
+         buildLuckySpinIdleStrip();
+         overlay.classList.add('show');
+@@ -5616,7 +5621,7 @@
+         toggleId: 'buddyFloatToggle',
+         storageKey: BUDDY_FLOAT_SIZE_KEY,
+         collapsedKey: 'mrpark_buddy_float_collapsed',
+-        collapseLabel: 'Minimize AI Buddy',
++        collapseLabel: 'Minimize Virtual Mr. Park',
+         collapseTitle: 'Minimize',
+         expandLabel: 'Open Virtual Mr. Park',
+         expandTitle: 'Open Virtual Mr. Park'
+diff --git a/server/public/Teacher.html b/server/public/Teacher.html
+index fae3630..6ba1542 100644
+--- a/server/public/Teacher.html
++++ b/server/public/Teacher.html
+@@ -49,7 +49,7 @@
+         // deploy; on mismatch we force exactly one hard reload (with a cache-busting
+         // query param) so the home-screen icon can never get stuck on stale UI.
+         (function() {
+-            var APP_BUILD = '2026-08-01.09';
++            var APP_BUILD = '2026-08-02.01';
+             window.MRPARK_BUILD = APP_BUILD;
+             var KEY = 'mrpark_app_build';
+             try {
+@@ -6349,10 +6349,10 @@
+                     <i class="fa-solid fa-key"></i> Portal logins
+                 </button>
+                 <button type="button" class="btn btn-sm btn-outline-info rounded-pill px-3" id="vocabLmsBtn">
+-                    <i class="fa-solid fa-layer-group"></i> Vocab Monitor
++                    <i class="fa-solid fa-rocket"></i> Vocab Booster
+                 </button>
+                 <button type="button" class="btn btn-sm btn-outline-primary rounded-pill px-3" id="vocabActivityBtn">
+-                    <i class="fa-solid fa-list-ul"></i> Vocab Activity
++                    <i class="fa-solid fa-list-ul"></i> Vocab Booster Log
+                 </button>
+                 <button type="button" class="btn btn-sm btn-warning rounded-pill px-3" id="openClassPendingBtn">
+                     <i class="fa-solid fa-hourglass-half"></i> Pending Homework
+@@ -6580,7 +6580,7 @@
+             <button type="button" class="teacher-more-btn" data-trigger-click="openReportBtn"><i class="fa-solid fa-chart-line"></i> Monthly Report</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassLogBtn"><i class="fa-solid fa-book-open"></i> Class Log</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassPendingBtn"><i class="fa-solid fa-hourglass-half"></i> Pending HW</button>
+-            <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-layer-group"></i> Vocab Monitor</button>
++            <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-rocket"></i> Vocab Booster</button>
+             <button type="button" class="teacher-more-btn" id="teacherMobileThemeBtn"><i class="fa-solid fa-moon"></i> Dark Mode</button>
+         </div>
+         <button type="button" class="btn btn-link btn-sm text-muted text-decoration-none px-0 mt-2 withdrawn-entry-link" data-trigger-click="openWithdrawnStudentsBtn">
+@@ -7139,12 +7139,12 @@
+     </div>
+ </div>
+ 
+-<!-- Vocab LMS: roster overview + word bank uploads + daily-quest settings -->
++<!-- Vocab Booster: roster overview + word bank uploads + daily-quest settings -->
+ <div class="modal fade app-modal" id="vocabLmsModal" tabindex="-1" aria-hidden="true">
+     <div class="modal-dialog modal-dialog-centered modal-xl modal-dialog-scrollable">
+         <div class="modal-content">
+             <div class="modal-header">
+-                <h5 class="modal-title"><i class="fa-solid fa-layer-group"></i> Vocab Monitor — <span id="vocabLmsClassName">Class</span></h5>
++                <h5 class="modal-title"><i class="fa-solid fa-rocket"></i> Vocab Booster — <span id="vocabLmsClassName">Class</span></h5>
+                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+             </div>
+             <div class="modal-body">
+@@ -7319,7 +7319,7 @@
+     <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+         <div class="modal-content">
+             <div class="modal-header">
+-                <h5 class="modal-title"><i class="fa-solid fa-list-ul"></i> Vocab Activity — <span id="vocabActivityClassName">Class</span></h5>
++                <h5 class="modal-title"><i class="fa-solid fa-list-ul"></i> Vocab Booster Log — <span id="vocabActivityClassName">Class</span></h5>
+                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+             </div>
+             <div class="modal-body">
+@@ -16882,7 +16882,7 @@
+             body: JSON.stringify({ dailyTarget: dailyTarget, passThreshold: passThreshold })
+         }).then(function(res) {
+             vocabLmsState.settings = res;
+-            appToast('Vocab settings saved.');
++            appToast('Vocab Booster settings saved.');
+         }).catch(function(err) {
+             appAlert(err.message || 'Could not save settings.');
+         });
+diff --git a/server/public/sw.js b/server/public/sw.js
+index 3daf3d7..07a695e 100644
+--- a/server/public/sw.js
++++ b/server/public/sw.js
+@@ -1,4 +1,4 @@
+-const CACHE = 'mrpark-shell-2026-08-01.09';
++const CACHE = 'mrpark-shell-2026-08-02.01';
+ const SHELL = [
+   '/',
+   '/offline.html',
+diff --git a/server/scripts/build-public.js b/server/scripts/build-public.js
+index 91e5697..0207f49 100644
+--- a/server/scripts/build-public.js
++++ b/server/scripts/build-public.js
+@@ -7,7 +7,7 @@
+ const fs = require('fs');
+ const path = require('path');
+ 
+-const PORTAL_BUILD = '2026-08-01.09';
++const PORTAL_BUILD = '2026-08-02.01';
+ 
+ const serverDir = path.join(__dirname, '..');
+ const repoRoot = path.join(serverDir, '..');
+diff --git a/server/src/routes.js b/server/src/routes.js
+index bc7e83a..ce6b892 100644
+--- a/server/src/routes.js
++++ b/server/src/routes.js
+@@ -228,7 +228,7 @@ router.get('/health', (req, res) => {
+   res.json({
+     ok: true,
+     service: 'mrpark-class-api',
+-    portalBuild: '2026-08-01.09',
++    portalBuild: '2026-08-02.01',
+     pwaEnabled: true,
+     phase: 5,
+     supabase: isSupabaseEnabled(),
+diff --git a/server/teacher-src/Index.html b/server/teacher-src/Index.html
+index 378be1b..e406eae 100644
+--- a/server/teacher-src/Index.html
++++ b/server/teacher-src/Index.html
+@@ -6203,10 +6203,10 @@
+                     <i class="fa-solid fa-key"></i> Portal logins
+                 </button>
+                 <button type="button" class="btn btn-sm btn-outline-info rounded-pill px-3" id="vocabLmsBtn">
+-                    <i class="fa-solid fa-layer-group"></i> Vocab Monitor
++                    <i class="fa-solid fa-rocket"></i> Vocab Booster
+                 </button>
+                 <button type="button" class="btn btn-sm btn-outline-primary rounded-pill px-3" id="vocabActivityBtn">
+-                    <i class="fa-solid fa-list-ul"></i> Vocab Activity
++                    <i class="fa-solid fa-list-ul"></i> Vocab Booster Log
+                 </button>
+                 <button type="button" class="btn btn-sm btn-warning rounded-pill px-3" id="openClassPendingBtn">
+                     <i class="fa-solid fa-hourglass-half"></i> Pending Homework
+@@ -6434,7 +6434,7 @@
+             <button type="button" class="teacher-more-btn" data-trigger-click="openReportBtn"><i class="fa-solid fa-chart-line"></i> Monthly Report</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassLogBtn"><i class="fa-solid fa-book-open"></i> Class Log</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassPendingBtn"><i class="fa-solid fa-hourglass-half"></i> Pending HW</button>
+-            <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-layer-group"></i> Vocab Monitor</button>
++            <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-rocket"></i> Vocab Booster</button>
+             <button type="button" class="teacher-more-btn" id="teacherMobileThemeBtn"><i class="fa-solid fa-moon"></i> Dark Mode</button>
+         </div>
+         <button type="button" class="btn btn-link btn-sm text-muted text-decoration-none px-0 mt-2 withdrawn-entry-link" data-trigger-click="openWithdrawnStudentsBtn">
+@@ -6993,12 +6993,12 @@
+     </div>
+ </div>
+ 
+-<!-- Vocab LMS: roster overview + word bank uploads + daily-quest settings -->
++<!-- Vocab Booster: roster overview + word bank uploads + daily-quest settings -->
+ <div class="modal fade app-modal" id="vocabLmsModal" tabindex="-1" aria-hidden="true">
+     <div class="modal-dialog modal-dialog-centered modal-xl modal-dialog-scrollable">
+         <div class="modal-content">
+             <div class="modal-header">
+-                <h5 class="modal-title"><i class="fa-solid fa-layer-group"></i> Vocab Monitor — <span id="vocabLmsClassName">Class</span></h5>
++                <h5 class="modal-title"><i class="fa-solid fa-rocket"></i> Vocab Booster — <span id="vocabLmsClassName">Class</span></h5>
+                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+             </div>
+             <div class="modal-body">
+@@ -7173,7 +7173,7 @@
+     <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+         <div class="modal-content">
+             <div class="modal-header">
+-                <h5 class="modal-title"><i class="fa-solid fa-list-ul"></i> Vocab Activity — <span id="vocabActivityClassName">Class</span></h5>
++                <h5 class="modal-title"><i class="fa-solid fa-list-ul"></i> Vocab Booster Log — <span id="vocabActivityClassName">Class</span></h5>
+                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+             </div>
+             <div class="modal-body">
+@@ -16742,7 +16742,7 @@
+             body: JSON.stringify({ dailyTarget: dailyTarget, passThreshold: passThreshold })
+         }).then(function(res) {
+             vocabLmsState.settings = res;
+-            appToast('Vocab settings saved.');
++            appToast('Vocab Booster settings saved.');
+         }).catch(function(err) {
+             appAlert(err.message || 'Could not save settings.');
+         });
+diff --git a/server/teacher-src/Student.html b/server/teacher-src/Student.html
+index 5b43db3..0a4e100 100644
+--- a/server/teacher-src/Student.html
++++ b/server/teacher-src/Student.html
+@@ -1786,6 +1786,14 @@
+                 cursor: pointer;
+             }
+         .mobile-nav-btn i { font-size: 1.25rem; }
++        .mobile-nav-label-2line {
++            display: flex;
++            flex-direction: column;
++            align-items: center;
++            line-height: 1.05;
++            font-size: 0.58rem;
++            letter-spacing: -0.01em;
++        }
+         .mobile-nav-btn.active {
+             color: var(--primary-dark);
+             background: linear-gradient(135deg, rgba(59, 158, 221, 0.12), rgba(255, 159, 67, 0.1));
+@@ -2177,12 +2185,12 @@
+             <div class="stats" id="statsGrid"></div>
+         </div>
+ 
+-        <div class="card portal-card-cute dashboard-card vocab-shell" data-panel="home" id="vocabShell">
+-            <div class="card-title"><i class="fa-solid fa-layer-group"></i> Words</div>
++        <div class="card portal-card-cute dashboard-card vocab-shell" data-panel="vocab" id="vocabShell">
++            <div class="card-title"><i class="fa-solid fa-rocket"></i> Vocab Booster</div>
+ 
+             <div id="vocabNeedsPlacement">
+                 <div class="vocab-hero">
+-                    <p class="vocab-kicker">Placement</p>
++                    <p class="vocab-kicker">Vocab Booster</p>
+                     <h2>Find your tier first</h2>
+                     <p>Take a short placement test once. Then today’s words appear here automatically.</p>
+                 </div>
+@@ -2410,10 +2418,11 @@
+         <span>Mr. Park</span>
+     </button>
+     <button type="button" class="mobile-nav-btn" data-mobile-tab="buddy">
+-        <i class="fa-solid fa-wand-magic-sparkles"></i><span>AI Buddy</span>
++        <i class="fa-solid fa-wand-magic-sparkles"></i>
++        <span class="mobile-nav-label-2line"><span>Virtual</span><span>Mr. Park</span></span>
+     </button>
+     <button type="button" class="mobile-nav-btn" data-mobile-tab="vocab">
+-        <i class="fa-solid fa-layer-group"></i><span>Words</span>
++        <i class="fa-solid fa-rocket"></i><span>Booster</span>
+     </button>
+     <button type="button" class="mobile-nav-btn" data-mobile-tab="more">
+         <i class="fa-solid fa-ellipsis"></i><span>More</span>
+@@ -2756,11 +2765,7 @@
+         );
+         document.querySelectorAll('.dashboard-card').forEach(function(card) {
+             var panel = card.getAttribute('data-panel');
+-            var show = panel === activeMobilePanel;
+-            if (card.id === 'vocabShell' && (activeMobilePanel === 'home' || activeMobilePanel === 'vocab')) {
+-                show = true;
+-            }
+-            card.classList.toggle('panel-active', show);
++            card.classList.toggle('panel-active', panel === activeMobilePanel);
+         });
+         if (activeMobilePanel === 'vocab') {
+             var shell = $('vocabShell');
+@@ -3293,7 +3298,7 @@
+ 
+         if (result) result.classList.remove('show');
+         if (doneBtn) doneBtn.classList.remove('show');
+-        if (title) title.textContent = opts.title || 'Vocab reward!';
++        if (title) title.textContent = opts.title || 'Vocab Booster reward!';
+         if (sub) sub.textContent = opts.sub || 'Tap into your Lucky Draw…';
+         buildLuckySpinIdleStrip();
+         overlay.classList.add('show');
+@@ -5467,7 +5472,7 @@
+         toggleId: 'buddyFloatToggle',
+         storageKey: BUDDY_FLOAT_SIZE_KEY,
+         collapsedKey: 'mrpark_buddy_float_collapsed',
+-        collapseLabel: 'Minimize AI Buddy',
++        collapseLabel: 'Minimize Virtual Mr. Park',
+         collapseTitle: 'Minimize',
+         expandLabel: 'Open Virtual Mr. Park',
+         expandTitle: 'Open Virtual Mr. Park'
+-- 
+2.43.0
+
