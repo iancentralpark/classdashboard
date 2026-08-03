@@ -1,0 +1,619 @@
+From 54ed96603a7f9d369e86bdecd16f05acc17cc521 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sat, 1 Aug 2026 10:00:08 +0000
+Subject: [PATCH] Add date picker to Vocab Monitor for past-day reviews.
+
+Teachers can step through Seoul calendar days and load that day's
+sets, wrongs, restudy, and promo deltas in the same card layout.
+---
+ Index.html                         | 110 ++++++++++++++++++++++++++---
+ server/public/Student.html         |   8 +--
+ server/public/Teacher.html         |  74 ++++++++++++++++---
+ server/public/sw.js                |   2 +-
+ server/scripts/build-public.js     |   2 +-
+ server/src/routes.js               |   8 ++-
+ server/src/vocabLearningService.js |  42 +++++++++--
+ server/teacher-src/Index.html      |  72 ++++++++++++++++---
+ 8 files changed, 280 insertions(+), 38 deletions(-)
+
+diff --git a/Index.html b/Index.html
+index cd4b508..cc60a1d 100644
+--- a/Index.html
++++ b/Index.html
+@@ -6913,17 +6913,28 @@
+ 
+                 <div id="vocabLmsOverviewPane" class="abuse-hub-pane">
+                     <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+-                        <div class="small text-muted" id="vocabLmsMonitorMeta">Live Vocab Booster monitor for today (Seoul).</div>
++                        <div class="d-flex align-items-center flex-wrap gap-2">
++                            <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabLmsDatePrevBtn" title="Previous day">
++                                <i class="fa-solid fa-chevron-left"></i>
++                            </button>
++                            <input type="date" class="form-control form-control-sm" id="vocabLmsMonitorDate" style="width:auto;min-width:9.5rem;">
++                            <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabLmsDateNextBtn" title="Next day">
++                                <i class="fa-solid fa-chevron-right"></i>
++                            </button>
++                            <button type="button" class="btn btn-outline-primary btn-sm" id="vocabLmsDateTodayBtn">Today</button>
++                        </div>
+                         <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabLmsRefreshBtn">
+                             <i class="fa-solid fa-rotate"></i> Refresh
+                         </button>
+                     </div>
++                    <div class="small text-muted mb-2" id="vocabLmsMonitorMeta">Vocab Booster monitor (Seoul date).</div>
+                     <div id="vocabLmsOverviewLoading" class="text-muted small py-3">Loading…</div>
+                     <div id="vocabLmsRosterWrap" class="d-none">
+                         <div id="vocabLmsMonitorCards" class="vocab-monitor-cards"></div>
+                         <p class="text-muted small mt-3 mb-0">
+-                            Start time / study minutes / retry appear after students use the updated portal.
+-                            Older attempts still show score, wrongs, and promotion delta from Activity logs.
++                            Pick any past date to review that day’s sets, wrongs, restudy, and promo Δ.
++                            Current tier/promotion score is the student’s live ladder position.
++                            Start time / study minutes / retry appear fully after the 2026-08-01.05+ portal.
+                         </p>
+                     </div>
+                 </div>
+@@ -16203,7 +16214,44 @@
+         }, { title: 'Restore student', okLabel: 'Restore' });
+     }
+ 
+-    var vocabLmsState = { settings: null };
++    var vocabLmsState = { settings: null, monitorDate: '' };
++
++    function seoulDateYmd(offsetDays) {
++        var d = new Date();
++        if (offsetDays) d.setDate(d.getDate() + offsetDays);
++        try {
++            return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
++        } catch (e) {
++            return d.toISOString().slice(0, 10);
++        }
++    }
++
++    function shiftYmd(ymd, deltaDays) {
++        var parts = String(ymd || '').split('-');
++        if (parts.length !== 3) return seoulDateYmd(0);
++        var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
++        d.setDate(d.getDate() + (Number(deltaDays) || 0));
++        var y = d.getFullYear();
++        var m = String(d.getMonth() + 1).padStart(2, '0');
++        var day = String(d.getDate()).padStart(2, '0');
++        return y + '-' + m + '-' + day;
++    }
++
++    function getVocabMonitorDateInput() {
++        return document.getElementById('vocabLmsMonitorDate');
++    }
++
++    function syncVocabMonitorDateControls(questDate, isToday) {
++        var input = getVocabMonitorDateInput();
++        var today = seoulDateYmd(0);
++        if (input) {
++            input.max = today;
++            if (questDate) input.value = questDate;
++            vocabLmsState.monitorDate = input.value || today;
++        }
++        var nextBtn = document.getElementById('vocabLmsDateNextBtn');
++        if (nextBtn) nextBtn.disabled = !!(isToday || (input && input.value >= today));
++    }
+ 
+     function openVocabLmsModal() {
+         if (!selectedClass) {
+@@ -16212,6 +16260,9 @@
+         }
+         document.getElementById('vocabLmsClassName').textContent = selectedClass.name;
+         setVocabLmsTab('overview');
++        var input = getVocabMonitorDateInput();
++        if (input && !input.value) input.value = seoulDateYmd(0);
++        syncVocabMonitorDateControls(input ? input.value : seoulDateYmd(0), true);
+         const modalEl = document.getElementById('vocabLmsModal');
+         elevateAppDialogModal(modalEl);
+         bootstrap.Modal.getOrCreateInstance(modalEl).show();
+@@ -16348,16 +16399,21 @@
+     function refreshVocabLmsOverview() {
+         if (!selectedClass) return;
+         const classId = encodeURIComponent(selectedClass.id);
++        var input = getVocabMonitorDateInput();
++        var date = (input && input.value) || vocabLmsState.monitorDate || seoulDateYmd(0);
++        vocabLmsState.monitorDate = date;
+         document.getElementById('vocabLmsOverviewLoading').classList.remove('d-none');
++        document.getElementById('vocabLmsOverviewLoading').textContent = 'Loading…';
+         document.getElementById('vocabLmsRosterWrap').classList.add('d-none');
+-        nodeFetch('/api/vocab/class/' + classId + '/overview?_=' + Date.now())
++        nodeFetch('/api/vocab/class/' + classId + '/overview?date=' + encodeURIComponent(date) + '&_=' + Date.now())
+             .then(function(res) {
+                 vocabLmsState.settings = res.settings || {};
+                 document.getElementById('vocabLmsDailyTarget').value = vocabLmsState.settings.daily_target || 10;
+                 document.getElementById('vocabLmsPassThreshold').value = vocabLmsState.settings.pass_threshold != null ? vocabLmsState.settings.pass_threshold : 100;
+                 var maxSessEl = document.getElementById('vocabLmsMaxSessions');
+                 if (maxSessEl) maxSessEl.value = vocabLmsState.settings.max_daily_sessions || 3;
+-                renderVocabLmsRoster(res.students || [], res.questDate);
++                syncVocabMonitorDateControls(res.questDate || date, !!res.isToday);
++                renderVocabLmsRoster(res.students || [], res.questDate || date, !!res.isToday);
+                 document.getElementById('vocabLmsOverviewLoading').classList.add('d-none');
+                 document.getElementById('vocabLmsOverviewLoading').textContent = 'Loading…';
+                 document.getElementById('vocabLmsRosterWrap').classList.remove('d-none');
+@@ -16460,14 +16516,14 @@
+         return '<span class="vocab-monitor-delta ' + cls + '">' + (v > 0 ? '+' : '') + v + '</span>';
+     }
+ 
+-    function renderVocabLmsRoster(students, questDate) {
++    function renderVocabLmsRoster(students, questDate, isToday) {
+         const cards = document.getElementById('vocabLmsMonitorCards');
+         const meta = document.getElementById('vocabLmsMonitorMeta');
+         if (!cards) return;
+         if (meta) {
+             var active = (students || []).filter(function(s) { return s.activeToday; }).length;
+             meta.textContent =
+-                'Today monitor' + (questDate ? ' · ' + questDate : '') +
++                (isToday ? 'Today' : 'Day') + ' monitor' + (questDate ? ' · ' + questDate : '') +
+                 ' (Seoul) · ' + active + ' active / ' + (students || []).length + ' students';
+         }
+         if (!students.length) {
+@@ -16945,6 +17001,44 @@
+             refreshVocabLmsOverview();
+             refreshVocabLmsWordCount();
+         });
++        var dateInput = getVocabMonitorDateInput();
++        if (dateInput) {
++            dateInput.addEventListener('change', function() {
++                vocabLmsState.monitorDate = dateInput.value || seoulDateYmd(0);
++                refreshVocabLmsOverview();
++            });
++        }
++        var prevBtn = document.getElementById('vocabLmsDatePrevBtn');
++        if (prevBtn) {
++            prevBtn.addEventListener('click', function() {
++                var cur = (dateInput && dateInput.value) || vocabLmsState.monitorDate || seoulDateYmd(0);
++                var next = shiftYmd(cur, -1);
++                if (dateInput) dateInput.value = next;
++                vocabLmsState.monitorDate = next;
++                refreshVocabLmsOverview();
++            });
++        }
++        var nextBtn = document.getElementById('vocabLmsDateNextBtn');
++        if (nextBtn) {
++            nextBtn.addEventListener('click', function() {
++                var today = seoulDateYmd(0);
++                var cur = (dateInput && dateInput.value) || vocabLmsState.monitorDate || today;
++                var next = shiftYmd(cur, 1);
++                if (next > today) next = today;
++                if (dateInput) dateInput.value = next;
++                vocabLmsState.monitorDate = next;
++                refreshVocabLmsOverview();
++            });
++        }
++        var todayBtn = document.getElementById('vocabLmsDateTodayBtn');
++        if (todayBtn) {
++            todayBtn.addEventListener('click', function() {
++                var today = seoulDateYmd(0);
++                if (dateInput) dateInput.value = today;
++                vocabLmsState.monitorDate = today;
++                refreshVocabLmsOverview();
++            });
++        }
+         const tierRefreshBtn = document.getElementById('vocabLmsTierRefreshBtn');
+         if (tierRefreshBtn) tierRefreshBtn.addEventListener('click', refreshVocabLmsTierStats);
+         const importBtn = document.getElementById('vocabLmsBulkImportBtn');
+diff --git a/server/public/Student.html b/server/public/Student.html
+index 3e03efa..c6c4a67 100644
+--- a/server/public/Student.html
++++ b/server/public/Student.html
+@@ -11,7 +11,7 @@
+     </script>
+     <script>
+         (function() {
+-            var PORTAL_BUILD = '2026-08-01.05';
++            var PORTAL_BUILD = '2026-08-01.06';
+             window.PORTAL_BUILD = PORTAL_BUILD;
+             var KEY = 'mrpark_portal_build';
+             try {
+@@ -2271,9 +2271,9 @@
+             .stamp-mark { width: 54px; height: 54px; margin-left: -27px; margin-top: -27px; }
+         }
+     </style>
+-<link rel="stylesheet" href="/css/vocab-learn.css?v=2026-08-01.05">
+-<script src="/js/vocab-mock-data.js?v=2026-08-01.05" defer></script>
+-<script src="/js/vocab-learn.js?v=2026-08-01.05" defer></script>
++<link rel="stylesheet" href="/css/vocab-learn.css?v=2026-08-01.06">
++<script src="/js/vocab-mock-data.js?v=2026-08-01.06" defer></script>
++<script src="/js/vocab-learn.js?v=2026-08-01.06" defer></script>
+ </head>
+ <body>
+ <div class="wrap">
+diff --git a/server/public/Teacher.html b/server/public/Teacher.html
+index 510dc43..50bce64 100644
+--- a/server/public/Teacher.html
++++ b/server/public/Teacher.html
+@@ -49,7 +49,7 @@
+         // deploy; on mismatch we force exactly one hard reload (with a cache-busting
+         // query param) so the home-screen icon can never get stuck on stale UI.
+         (function() {
+-            var APP_BUILD = '2026-08-01.05';
++            var APP_BUILD = '2026-08-01.06';
+             window.MRPARK_BUILD = APP_BUILD;
+             var KEY = 'mrpark_app_build';
+             try {
+@@ -7059,17 +7059,28 @@
+ 
+                 <div id="vocabLmsOverviewPane" class="abuse-hub-pane">
+                     <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+-                        <div class="small text-muted" id="vocabLmsMonitorMeta">Live Vocab Booster monitor for today (Seoul).</div>
++                        <div class="d-flex align-items-center flex-wrap gap-2">
++                            <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabLmsDatePrevBtn" title="Previous day">
++                                <i class="fa-solid fa-chevron-left"></i>
++                            </button>
++                            <input type="date" class="form-control form-control-sm" id="vocabLmsMonitorDate" style="width:auto;min-width:9.5rem;">
++                            <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabLmsDateNextBtn" title="Next day">
++                                <i class="fa-solid fa-chevron-right"></i>
++                            </button>
++                            <button type="button" class="btn btn-outline-primary btn-sm" id="vocabLmsDateTodayBtn">Today</button>
++                        </div>
+                         <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabLmsRefreshBtn">
+                             <i class="fa-solid fa-rotate"></i> Refresh
+                         </button>
+                     </div>
++                    <div class="small text-muted mb-2" id="vocabLmsMonitorMeta">Vocab Booster monitor (Seoul date).</div>
+                     <div id="vocabLmsOverviewLoading" class="text-muted small py-3">Loading…</div>
+                     <div id="vocabLmsRosterWrap" class="d-none">
+                         <div id="vocabLmsMonitorCards" class="vocab-monitor-cards"></div>
+                         <p class="text-muted small mt-3 mb-0">
+-                            Start time / study minutes / retry appear after students use the updated portal.
+-                            Older attempts still show score, wrongs, and promotion delta from Activity logs.
++                            Pick any past date to review that day’s sets, wrongs, restudy, and promo Δ.
++                            Current tier/promotion score is the student’s live ladder position.
++                            Start time / study minutes / retry appear fully after the 2026-08-01.05+ portal.
+                         </p>
+                     </div>
+                 </div>
+@@ -16343,7 +16354,44 @@
+         }, { title: 'Restore student', okLabel: 'Restore' });
+     }
+ 
+-    var vocabLmsState = { settings: null };
++    var vocabLmsState = { settings: null, monitorDate: '' };
++
++    function seoulDateYmd(offsetDays) {
++        var d = new Date();
++        if (offsetDays) d.setDate(d.getDate() + offsetDays);
++        try {
++            return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
++        } catch (e) {
++            return d.toISOString().slice(0, 10);
++        }
++    }
++
++    function shiftYmd(ymd, deltaDays) {
++        var parts = String(ymd || '').split('-');
++        if (parts.length !== 3) return seoulDateYmd(0);
++        var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
++        d.setDate(d.getDate() + (Number(deltaDays) || 0));
++        var y = d.getFullYear();
++        var m = String(d.getMonth() + 1).padStart(2, '0');
++        var day = String(d.getDate()).padStart(2, '0');
++        return y + '-' + m + '-' + day;
++    }
++
++    function getVocabMonitorDateInput() {
++        return document.getElementById('vocabLmsMonitorDate');
++    }
++
++    function syncVocabMonitorDateControls(questDate, isToday) {
++        var input = getVocabMonitorDateInput();
++        var today = seoulDateYmd(0);
++        if (input) {
++            input.max = today;
++            if (questDate) input.value = questDate;
++            vocabLmsState.monitorDate = input.value || today;
++        }
++        var nextBtn = document.getElementById('vocabLmsDateNextBtn');
++        if (nextBtn) nextBtn.disabled = !!(isToday || (input && input.value >= today));
++    }
+ 
+     function openVocabLmsModal() {
+         if (!selectedClass) {
+@@ -16352,6 +16400,9 @@
+         }
+         document.getElementById('vocabLmsClassName').textContent = selectedClass.name;
+         setVocabLmsTab('overview');
++        var input = getVocabMonitorDateInput();
++        if (input && !input.value) input.value = seoulDateYmd(0);
++        syncVocabMonitorDateControls(input ? input.value : seoulDateYmd(0), true);
+         const modalEl = document.getElementById('vocabLmsModal');
+         elevateAppDialogModal(modalEl);
+         bootstrap.Modal.getOrCreateInstance(modalEl).show();
+@@ -16488,16 +16539,21 @@
+     function refreshVocabLmsOverview() {
+         if (!selectedClass) return;
+         const classId = encodeURIComponent(selectedClass.id);
++        var input = getVocabMonitorDateInput();
++        var date = (input && input.value) || vocabLmsState.monitorDate || seoulDateYmd(0);
++        vocabLmsState.monitorDate = date;
+         document.getElementById('vocabLmsOverviewLoading').classList.remove('d-none');
++        document.getElementById('vocabLmsOverviewLoading').textContent = 'Loading…';
+         document.getElementById('vocabLmsRosterWrap').classList.add('d-none');
+-        nodeFetch('/api/vocab/class/' + classId + '/overview?_=' + Date.now())
++        nodeFetch('/api/vocab/class/' + classId + '/overview?date=' + encodeURIComponent(date) + '&_=' + Date.now())
+             .then(function(res) {
+                 vocabLmsState.settings = res.settings || {};
+                 document.getElementById('vocabLmsDailyTarget').value = vocabLmsState.settings.daily_target || 10;
+                 document.getElementById('vocabLmsPassThreshold').value = vocabLmsState.settings.pass_threshold != null ? vocabLmsState.settings.pass_threshold : 100;
+                 var maxSessEl = document.getElementById('vocabLmsMaxSessions');
+                 if (maxSessEl) maxSessEl.value = vocabLmsState.settings.max_daily_sessions || 3;
+-                renderVocabLmsRoster(res.students || [], res.questDate);
++                syncVocabMonitorDateControls(res.questDate || date, !!res.isToday);
++                renderVocabLmsRoster(res.students || [], res.questDate || date, !!res.isToday);
+                 document.getElementById('vocabLmsOverviewLoading').classList.add('d-none');
+                 document.getElementById('vocabLmsOverviewLoading').textContent = 'Loading…';
+                 document.getElementById('vocabLmsRosterWrap').classList.remove('d-none');
+@@ -16600,14 +16656,14 @@
+         return '<span class="vocab-monitor-delta ' + cls + '">' + (v > 0 ? '+' : '') + v + '</span>';
+     }
+ 
+-    function renderVocabLmsRoster(students, questDate) {
++    function renderVocabLmsRoster(students, questDate, isToday) {
+         const cards = document.getElementById('vocabLmsMonitorCards');
+         const meta = document.getElementById('vocabLmsMonitorMeta');
+         if (!cards) return;
+         if (meta) {
+             var active = (students || []).filter(function(s) { return s.activeToday; }).length;
+             meta.textContent =
+-                'Today monitor' + (questDate ? ' · ' + questDate : '') +
++                (isToday ? 'Today' : 'Day') + ' monitor' + (questDate ? ' · ' + questDate : '') +
+                 ' (Seoul) · ' + active + ' active / ' + (students || []).length + ' students';
+         }
+         if (!students.length) {
+diff --git a/server/public/sw.js b/server/public/sw.js
+index 34f020e..77cae7d 100644
+--- a/server/public/sw.js
++++ b/server/public/sw.js
+@@ -1,4 +1,4 @@
+-const CACHE = 'mrpark-shell-2026-08-01.05';
++const CACHE = 'mrpark-shell-2026-08-01.06';
+ const SHELL = [
+   '/',
+   '/offline.html',
+diff --git a/server/scripts/build-public.js b/server/scripts/build-public.js
+index 53ecaf4..01ba31b 100644
+--- a/server/scripts/build-public.js
++++ b/server/scripts/build-public.js
+@@ -7,7 +7,7 @@
+ const fs = require('fs');
+ const path = require('path');
+ 
+-const PORTAL_BUILD = '2026-08-01.05';
++const PORTAL_BUILD = '2026-08-01.06';
+ 
+ const serverDir = path.join(__dirname, '..');
+ const repoRoot = path.join(serverDir, '..');
+diff --git a/server/src/routes.js b/server/src/routes.js
+index 133c5ae..7cb38d4 100644
+--- a/server/src/routes.js
++++ b/server/src/routes.js
+@@ -228,7 +228,7 @@ router.get('/health', (req, res) => {
+   res.json({
+     ok: true,
+     service: 'mrpark-class-api',
+-    portalBuild: '2026-08-01.05',
++    portalBuild: '2026-08-01.06',
+     pwaEnabled: true,
+     phase: 5,
+     supabase: isSupabaseEnabled(),
+@@ -1727,7 +1727,11 @@ router.delete('/vocab/words/:wordId', requireTeacherAuth, async (req, res) => {
+ 
+ router.get('/vocab/class/:classId/overview', requireTeacherAuth, async (req, res) => {
+   try {
+-    res.json(await getVocabClassOverview(req.params.classId));
++    res.json(
++      await getVocabClassOverview(req.params.classId, {
++        date: req.query.date ? String(req.query.date) : undefined
++      })
++    );
+   } catch (e) {
+     console.error('GET /vocab/class/overview', e);
+     res.status(500).json({ error: e.message || 'Server error' });
+diff --git a/server/src/vocabLearningService.js b/server/src/vocabLearningService.js
+index 5719c15..916bd24 100644
+--- a/server/src/vocabLearningService.js
++++ b/server/src/vocabLearningService.js
+@@ -1520,20 +1520,46 @@ function buildTodayMonitorByStudent(events, questDate) {
+   return map;
+ }
+ 
+-async function getClassOverview(classId) {
++function normalizeMonitorDate(raw) {
++  const today = todayStr();
++  if (raw == null || raw === '') return today;
++  const s = String(raw).trim().slice(0, 10);
++  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return today;
++  // Reject far-future dates; allow history up to ~1 year.
++  if (s > today) return today;
++  const oldest = new Date();
++  oldest.setFullYear(oldest.getFullYear() - 1);
++  const oldestStr = oldest.toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
++  if (s < oldestStr) return oldestStr;
++  return s;
++}
++
++function activityLookbackDaysForDate(questDate) {
++  const today = todayStr();
++  const gap = daysBetween(questDate, today);
++  if (gap == null || gap < 0) return 2;
++  return Math.max(2, Math.min(60, gap + 2));
++}
++
++async function getClassOverview(classId, opts) {
++  opts = opts || {};
+   const db = requireDb();
+   classId = String(classId);
+   const students = await getEnrolledStudents(classId);
+   const ids = students.map(s => s.id);
+-  if (!ids.length) return { students: [], settings: await getClassSettings(classId), questDate: todayStr() };
++  const date = normalizeMonitorDate(opts.date);
++  const today = todayStr();
++  if (!ids.length) {
++    return { students: [], settings: await getClassSettings(classId), questDate: date, isToday: date === today };
++  }
+ 
+   const settings = await getClassSettings(classId);
+-  const date = todayStr();
++  const lookbackDays = activityLookbackDaysForDate(date);
+ 
+   const [{ data: states }, { data: dailies }, activity] = await Promise.all([
+     db.from('vocab_student_state').select('*').in('student_id', ids),
+     db.from('vocab_daily_progress').select('*').in('student_id', ids).eq('quest_date', date),
+-    listActivityEvents({ classId: classId, days: 2, limit: 500 }).catch(function () {
++    listActivityEvents({ classId: classId, days: lookbackDays, limit: 800 }).catch(function () {
+       return { events: [] };
+     })
+   ]);
+@@ -1596,7 +1622,13 @@ async function getClassOverview(classId) {
+     return String(a.name || '').localeCompare(String(b.name || ''));
+   });
+ 
+-  return { students: rows, settings, questDate: date };
++  return {
++    students: rows,
++    settings,
++    questDate: date,
++    isToday: date === today,
++    today: today
++  };
+ }
+ 
+ async function overrideStudentState(studentId, opts) {
+diff --git a/server/teacher-src/Index.html b/server/teacher-src/Index.html
+index cd4b508..ab5dd14 100644
+--- a/server/teacher-src/Index.html
++++ b/server/teacher-src/Index.html
+@@ -6913,17 +6913,28 @@
+ 
+                 <div id="vocabLmsOverviewPane" class="abuse-hub-pane">
+                     <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+-                        <div class="small text-muted" id="vocabLmsMonitorMeta">Live Vocab Booster monitor for today (Seoul).</div>
++                        <div class="d-flex align-items-center flex-wrap gap-2">
++                            <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabLmsDatePrevBtn" title="Previous day">
++                                <i class="fa-solid fa-chevron-left"></i>
++                            </button>
++                            <input type="date" class="form-control form-control-sm" id="vocabLmsMonitorDate" style="width:auto;min-width:9.5rem;">
++                            <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabLmsDateNextBtn" title="Next day">
++                                <i class="fa-solid fa-chevron-right"></i>
++                            </button>
++                            <button type="button" class="btn btn-outline-primary btn-sm" id="vocabLmsDateTodayBtn">Today</button>
++                        </div>
+                         <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabLmsRefreshBtn">
+                             <i class="fa-solid fa-rotate"></i> Refresh
+                         </button>
+                     </div>
++                    <div class="small text-muted mb-2" id="vocabLmsMonitorMeta">Vocab Booster monitor (Seoul date).</div>
+                     <div id="vocabLmsOverviewLoading" class="text-muted small py-3">Loading…</div>
+                     <div id="vocabLmsRosterWrap" class="d-none">
+                         <div id="vocabLmsMonitorCards" class="vocab-monitor-cards"></div>
+                         <p class="text-muted small mt-3 mb-0">
+-                            Start time / study minutes / retry appear after students use the updated portal.
+-                            Older attempts still show score, wrongs, and promotion delta from Activity logs.
++                            Pick any past date to review that day’s sets, wrongs, restudy, and promo Δ.
++                            Current tier/promotion score is the student’s live ladder position.
++                            Start time / study minutes / retry appear fully after the 2026-08-01.05+ portal.
+                         </p>
+                     </div>
+                 </div>
+@@ -16203,7 +16214,44 @@
+         }, { title: 'Restore student', okLabel: 'Restore' });
+     }
+ 
+-    var vocabLmsState = { settings: null };
++    var vocabLmsState = { settings: null, monitorDate: '' };
++
++    function seoulDateYmd(offsetDays) {
++        var d = new Date();
++        if (offsetDays) d.setDate(d.getDate() + offsetDays);
++        try {
++            return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
++        } catch (e) {
++            return d.toISOString().slice(0, 10);
++        }
++    }
++
++    function shiftYmd(ymd, deltaDays) {
++        var parts = String(ymd || '').split('-');
++        if (parts.length !== 3) return seoulDateYmd(0);
++        var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
++        d.setDate(d.getDate() + (Number(deltaDays) || 0));
++        var y = d.getFullYear();
++        var m = String(d.getMonth() + 1).padStart(2, '0');
++        var day = String(d.getDate()).padStart(2, '0');
++        return y + '-' + m + '-' + day;
++    }
++
++    function getVocabMonitorDateInput() {
++        return document.getElementById('vocabLmsMonitorDate');
++    }
++
++    function syncVocabMonitorDateControls(questDate, isToday) {
++        var input = getVocabMonitorDateInput();
++        var today = seoulDateYmd(0);
++        if (input) {
++            input.max = today;
++            if (questDate) input.value = questDate;
++            vocabLmsState.monitorDate = input.value || today;
++        }
++        var nextBtn = document.getElementById('vocabLmsDateNextBtn');
++        if (nextBtn) nextBtn.disabled = !!(isToday || (input && input.value >= today));
++    }
+ 
+     function openVocabLmsModal() {
+         if (!selectedClass) {
+@@ -16212,6 +16260,9 @@
+         }
+         document.getElementById('vocabLmsClassName').textContent = selectedClass.name;
+         setVocabLmsTab('overview');
++        var input = getVocabMonitorDateInput();
++        if (input && !input.value) input.value = seoulDateYmd(0);
++        syncVocabMonitorDateControls(input ? input.value : seoulDateYmd(0), true);
+         const modalEl = document.getElementById('vocabLmsModal');
+         elevateAppDialogModal(modalEl);
+         bootstrap.Modal.getOrCreateInstance(modalEl).show();
+@@ -16348,16 +16399,21 @@
+     function refreshVocabLmsOverview() {
+         if (!selectedClass) return;
+         const classId = encodeURIComponent(selectedClass.id);
++        var input = getVocabMonitorDateInput();
++        var date = (input && input.value) || vocabLmsState.monitorDate || seoulDateYmd(0);
++        vocabLmsState.monitorDate = date;
+         document.getElementById('vocabLmsOverviewLoading').classList.remove('d-none');
++        document.getElementById('vocabLmsOverviewLoading').textContent = 'Loading…';
+         document.getElementById('vocabLmsRosterWrap').classList.add('d-none');
+-        nodeFetch('/api/vocab/class/' + classId + '/overview?_=' + Date.now())
++        nodeFetch('/api/vocab/class/' + classId + '/overview?date=' + encodeURIComponent(date) + '&_=' + Date.now())
+             .then(function(res) {
+                 vocabLmsState.settings = res.settings || {};
+                 document.getElementById('vocabLmsDailyTarget').value = vocabLmsState.settings.daily_target || 10;
+                 document.getElementById('vocabLmsPassThreshold').value = vocabLmsState.settings.pass_threshold != null ? vocabLmsState.settings.pass_threshold : 100;
+                 var maxSessEl = document.getElementById('vocabLmsMaxSessions');
+                 if (maxSessEl) maxSessEl.value = vocabLmsState.settings.max_daily_sessions || 3;
+-                renderVocabLmsRoster(res.students || [], res.questDate);
++                syncVocabMonitorDateControls(res.questDate || date, !!res.isToday);
++                renderVocabLmsRoster(res.students || [], res.questDate || date, !!res.isToday);
+                 document.getElementById('vocabLmsOverviewLoading').classList.add('d-none');
+                 document.getElementById('vocabLmsOverviewLoading').textContent = 'Loading…';
+                 document.getElementById('vocabLmsRosterWrap').classList.remove('d-none');
+@@ -16460,14 +16516,14 @@
+         return '<span class="vocab-monitor-delta ' + cls + '">' + (v > 0 ? '+' : '') + v + '</span>';
+     }
+ 
+-    function renderVocabLmsRoster(students, questDate) {
++    function renderVocabLmsRoster(students, questDate, isToday) {
+         const cards = document.getElementById('vocabLmsMonitorCards');
+         const meta = document.getElementById('vocabLmsMonitorMeta');
+         if (!cards) return;
+         if (meta) {
+             var active = (students || []).filter(function(s) { return s.activeToday; }).length;
+             meta.textContent =
+-                'Today monitor' + (questDate ? ' · ' + questDate : '') +
++                (isToday ? 'Today' : 'Day') + ' monitor' + (questDate ? ' · ' + questDate : '') +
+                 ' (Seoul) · ' + active + ' active / ' + (students || []).length + ' students';
+         }
+         if (!students.length) {
+-- 
+2.43.0
+

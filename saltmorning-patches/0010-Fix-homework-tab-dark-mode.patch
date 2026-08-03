@@ -1,0 +1,320 @@
+From ea07b91fcdb0f650119dd38f98d713115269bc54 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sun, 2 Aug 2026 00:57:33 +0000
+Subject: [PATCH] Fix teacher mobile Homework tab dark mode (Last HW /
+ Textbooks / Post).
+
+Light #fff panel rules were winning over earlier dark styles; override
+subnav and homework panels after the light mobile CSS.
+---
+ Index.html                     | 62 ++++++++++++++++++++++++++++++++
+ server/public/Student.html     | 10 +++---
+ server/public/Teacher.html     | 64 +++++++++++++++++++++++++++++++++-
+ server/public/sw.js            |  2 +-
+ server/scripts/build-public.js |  2 +-
+ server/src/routes.js           |  2 +-
+ server/teacher-src/Index.html  | 62 ++++++++++++++++++++++++++++++++
+ 7 files changed, 196 insertions(+), 8 deletions(-)
+
+diff --git a/Index.html b/Index.html
+index e406eae..93955ee 100644
+--- a/Index.html
++++ b/Index.html
+@@ -5958,6 +5958,68 @@
+             border-color: var(--app-border) !important;
+         }
+         [data-theme="dark"] #abuseAlertModal .text-muted { color: var(--app-muted) !important; }
++        /* Homework tab: light #fff / #e3eef7 rules win unless overridden after them */
++        [data-theme="dark"] body.teacher-mobile #teacherHwSubnav.teacher-panel-active {
++            background: var(--app-surface-2) !important;
++            box-shadow: inset 0 0 0 1px var(--app-border);
++        }
++        [data-theme="dark"] body.teacher-mobile .teacher-hw-subtab {
++            color: var(--app-muted) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile .teacher-hw-subtab.active {
++            background: var(--app-surface-solid) !important;
++            color: #8ec8f5 !important;
++            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile #hwLastSection,
++        [data-theme="dark"] body.teacher-mobile #textbookSection,
++        [data-theme="dark"] body.teacher-mobile #homeworkUploadSection {
++            background: var(--app-surface-solid) !important;
++            color: var(--app-text) !important;
++            border: 1px solid var(--app-border) !important;
++            box-shadow: 0 2px 14px rgba(0, 0, 0, 0.35) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile #hwLastSection::before,
++        [data-theme="dark"] body.teacher-mobile #textbookSection::before,
++        [data-theme="dark"] body.teacher-mobile #homeworkUploadSection::before,
++        [data-theme="dark"] body.teacher-mobile #textbookQueueSection::before {
++            color: #8ec8f5 !important;
++        }
++        [data-theme="dark"] body.teacher-mobile #textbookQueueSection {
++            border-top-color: var(--app-border) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile .textbook-card,
++        [data-theme="dark"] body.teacher-mobile .tb-queue-item,
++        [data-theme="dark"] body.teacher-mobile .hw-item-row {
++            background: var(--app-surface-2) !important;
++            border-color: var(--app-border) !important;
++            color: var(--app-text) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile .textbook-card .tb-title,
++        [data-theme="dark"] body.teacher-mobile .tb-queue-name,
++        [data-theme="dark"] body.teacher-mobile .hw-display-title,
++        [data-theme="dark"] body.teacher-mobile #homeworkUploadSection .form-label {
++            color: var(--app-text) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile .hw-display-body,
++        [data-theme="dark"] body.teacher-mobile .tb-pos-label,
++        [data-theme="dark"] body.teacher-mobile .tb-queue-meta {
++            color: var(--app-muted) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile .hw-display-panel {
++            background: transparent !important;
++            box-shadow: none !important;
++        }
++        [data-theme="dark"] body.teacher-mobile #homeworkUploadSection .form-control,
++        [data-theme="dark"] body.teacher-mobile #homeworkUploadSection .form-select,
++        [data-theme="dark"] body.teacher-mobile #hwTitleInput,
++        [data-theme="dark"] body.teacher-mobile .hw-item-row-fields .form-control,
++        [data-theme="dark"] body.teacher-mobile .tb-daily-input .tb-position-input,
++        [data-theme="dark"] body.teacher-mobile .tb-daily-input .input-group-text {
++            background: var(--app-surface-3) !important;
++            color: var(--app-text) !important;
++            border-color: var(--app-border) !important;
++        }
+         body.teacher-mobile #manageClassesBtn { display: none !important; }
+         #studentDetailHistoryBlock { display: none !important; }
+         body.teacher-mobile[data-teacher-tab="messages"] #messengerMinimizeBtn { display: none; }
+diff --git a/server/public/Student.html b/server/public/Student.html
+index 20bae5b..36d5179 100644
+--- a/server/public/Student.html
++++ b/server/public/Student.html
+@@ -11,7 +11,7 @@
+     </script>
+     <script>
+         (function() {
+-            var PORTAL_BUILD = '2026-08-02.02';
++            var PORTAL_BUILD = '2026-08-02.03';
+             window.PORTAL_BUILD = PORTAL_BUILD;
+             var KEY = 'mrpark_portal_build';
+             try {
+@@ -1846,6 +1846,8 @@
+                 border-bottom: 1px solid rgba(59, 158, 221, 0.12);
+             }
+             .mobile-top-bar .welcome-name { font-size: 1.15rem; line-height: 1.2; }
++            .mobile-top-bar .welcome-tier-badge { font-size: 0.68rem; padding: 0.18rem 0.48rem 0.18rem 0.22rem; }
++            .mobile-top-bar .welcome-tier-badge-mark { width: 1.2rem; height: 1.2rem; font-size: 0.62rem; }
+             .mobile-top-bar .welcome-sub { font-size: 0.78rem; }
+             .mobile-top-bar .btn-outline {
+                 padding: 0.5rem 0.75rem;
+@@ -2329,9 +2331,9 @@
+             .stamp-mark { width: 54px; height: 54px; margin-left: -27px; margin-top: -27px; }
+         }
+     </style>
+-<link rel="stylesheet" href="/css/vocab-learn.css?v=2026-08-02.02">
+-<script src="/js/vocab-mock-data.js?v=2026-08-02.02" defer></script>
+-<script src="/js/vocab-learn.js?v=2026-08-02.02" defer></script>
++<link rel="stylesheet" href="/css/vocab-learn.css?v=2026-08-02.03">
++<script src="/js/vocab-mock-data.js?v=2026-08-02.03" defer></script>
++<script src="/js/vocab-learn.js?v=2026-08-02.03" defer></script>
+ </head>
+ <body>
+ <div class="wrap">
+diff --git a/server/public/Teacher.html b/server/public/Teacher.html
+index 1dc959c..8acbf62 100644
+--- a/server/public/Teacher.html
++++ b/server/public/Teacher.html
+@@ -49,7 +49,7 @@
+         // deploy; on mismatch we force exactly one hard reload (with a cache-busting
+         // query param) so the home-screen icon can never get stuck on stale UI.
+         (function() {
+-            var APP_BUILD = '2026-08-02.02';
++            var APP_BUILD = '2026-08-02.03';
+             window.MRPARK_BUILD = APP_BUILD;
+             var KEY = 'mrpark_app_build';
+             try {
+@@ -6104,6 +6104,68 @@
+             border-color: var(--app-border) !important;
+         }
+         [data-theme="dark"] #abuseAlertModal .text-muted { color: var(--app-muted) !important; }
++        /* Homework tab: light #fff / #e3eef7 rules win unless overridden after them */
++        [data-theme="dark"] body.teacher-mobile #teacherHwSubnav.teacher-panel-active {
++            background: var(--app-surface-2) !important;
++            box-shadow: inset 0 0 0 1px var(--app-border);
++        }
++        [data-theme="dark"] body.teacher-mobile .teacher-hw-subtab {
++            color: var(--app-muted) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile .teacher-hw-subtab.active {
++            background: var(--app-surface-solid) !important;
++            color: #8ec8f5 !important;
++            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile #hwLastSection,
++        [data-theme="dark"] body.teacher-mobile #textbookSection,
++        [data-theme="dark"] body.teacher-mobile #homeworkUploadSection {
++            background: var(--app-surface-solid) !important;
++            color: var(--app-text) !important;
++            border: 1px solid var(--app-border) !important;
++            box-shadow: 0 2px 14px rgba(0, 0, 0, 0.35) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile #hwLastSection::before,
++        [data-theme="dark"] body.teacher-mobile #textbookSection::before,
++        [data-theme="dark"] body.teacher-mobile #homeworkUploadSection::before,
++        [data-theme="dark"] body.teacher-mobile #textbookQueueSection::before {
++            color: #8ec8f5 !important;
++        }
++        [data-theme="dark"] body.teacher-mobile #textbookQueueSection {
++            border-top-color: var(--app-border) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile .textbook-card,
++        [data-theme="dark"] body.teacher-mobile .tb-queue-item,
++        [data-theme="dark"] body.teacher-mobile .hw-item-row {
++            background: var(--app-surface-2) !important;
++            border-color: var(--app-border) !important;
++            color: var(--app-text) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile .textbook-card .tb-title,
++        [data-theme="dark"] body.teacher-mobile .tb-queue-name,
++        [data-theme="dark"] body.teacher-mobile .hw-display-title,
++        [data-theme="dark"] body.teacher-mobile #homeworkUploadSection .form-label {
++            color: var(--app-text) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile .hw-display-body,
++        [data-theme="dark"] body.teacher-mobile .tb-pos-label,
++        [data-theme="dark"] body.teacher-mobile .tb-queue-meta {
++            color: var(--app-muted) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile .hw-display-panel {
++            background: transparent !important;
++            box-shadow: none !important;
++        }
++        [data-theme="dark"] body.teacher-mobile #homeworkUploadSection .form-control,
++        [data-theme="dark"] body.teacher-mobile #homeworkUploadSection .form-select,
++        [data-theme="dark"] body.teacher-mobile #hwTitleInput,
++        [data-theme="dark"] body.teacher-mobile .hw-item-row-fields .form-control,
++        [data-theme="dark"] body.teacher-mobile .tb-daily-input .tb-position-input,
++        [data-theme="dark"] body.teacher-mobile .tb-daily-input .input-group-text {
++            background: var(--app-surface-3) !important;
++            color: var(--app-text) !important;
++            border-color: var(--app-border) !important;
++        }
+         body.teacher-mobile #manageClassesBtn { display: none !important; }
+         #studentDetailHistoryBlock { display: none !important; }
+         body.teacher-mobile[data-teacher-tab="messages"] #messengerMinimizeBtn { display: none; }
+diff --git a/server/public/sw.js b/server/public/sw.js
+index 429cf66..b7b3e77 100644
+--- a/server/public/sw.js
++++ b/server/public/sw.js
+@@ -1,4 +1,4 @@
+-const CACHE = 'mrpark-shell-2026-08-02.02';
++const CACHE = 'mrpark-shell-2026-08-02.03';
+ const SHELL = [
+   '/',
+   '/offline.html',
+diff --git a/server/scripts/build-public.js b/server/scripts/build-public.js
+index 3b2f0fd..dbad06a 100644
+--- a/server/scripts/build-public.js
++++ b/server/scripts/build-public.js
+@@ -7,7 +7,7 @@
+ const fs = require('fs');
+ const path = require('path');
+ 
+-const PORTAL_BUILD = '2026-08-02.02';
++const PORTAL_BUILD = '2026-08-02.03';
+ 
+ const serverDir = path.join(__dirname, '..');
+ const repoRoot = path.join(serverDir, '..');
+diff --git a/server/src/routes.js b/server/src/routes.js
+index 39cf1ba..e0ff236 100644
+--- a/server/src/routes.js
++++ b/server/src/routes.js
+@@ -228,7 +228,7 @@ router.get('/health', (req, res) => {
+   res.json({
+     ok: true,
+     service: 'mrpark-class-api',
+-    portalBuild: '2026-08-02.02',
++    portalBuild: '2026-08-02.03',
+     pwaEnabled: true,
+     phase: 5,
+     supabase: isSupabaseEnabled(),
+diff --git a/server/teacher-src/Index.html b/server/teacher-src/Index.html
+index e406eae..93955ee 100644
+--- a/server/teacher-src/Index.html
++++ b/server/teacher-src/Index.html
+@@ -5958,6 +5958,68 @@
+             border-color: var(--app-border) !important;
+         }
+         [data-theme="dark"] #abuseAlertModal .text-muted { color: var(--app-muted) !important; }
++        /* Homework tab: light #fff / #e3eef7 rules win unless overridden after them */
++        [data-theme="dark"] body.teacher-mobile #teacherHwSubnav.teacher-panel-active {
++            background: var(--app-surface-2) !important;
++            box-shadow: inset 0 0 0 1px var(--app-border);
++        }
++        [data-theme="dark"] body.teacher-mobile .teacher-hw-subtab {
++            color: var(--app-muted) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile .teacher-hw-subtab.active {
++            background: var(--app-surface-solid) !important;
++            color: #8ec8f5 !important;
++            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile #hwLastSection,
++        [data-theme="dark"] body.teacher-mobile #textbookSection,
++        [data-theme="dark"] body.teacher-mobile #homeworkUploadSection {
++            background: var(--app-surface-solid) !important;
++            color: var(--app-text) !important;
++            border: 1px solid var(--app-border) !important;
++            box-shadow: 0 2px 14px rgba(0, 0, 0, 0.35) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile #hwLastSection::before,
++        [data-theme="dark"] body.teacher-mobile #textbookSection::before,
++        [data-theme="dark"] body.teacher-mobile #homeworkUploadSection::before,
++        [data-theme="dark"] body.teacher-mobile #textbookQueueSection::before {
++            color: #8ec8f5 !important;
++        }
++        [data-theme="dark"] body.teacher-mobile #textbookQueueSection {
++            border-top-color: var(--app-border) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile .textbook-card,
++        [data-theme="dark"] body.teacher-mobile .tb-queue-item,
++        [data-theme="dark"] body.teacher-mobile .hw-item-row {
++            background: var(--app-surface-2) !important;
++            border-color: var(--app-border) !important;
++            color: var(--app-text) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile .textbook-card .tb-title,
++        [data-theme="dark"] body.teacher-mobile .tb-queue-name,
++        [data-theme="dark"] body.teacher-mobile .hw-display-title,
++        [data-theme="dark"] body.teacher-mobile #homeworkUploadSection .form-label {
++            color: var(--app-text) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile .hw-display-body,
++        [data-theme="dark"] body.teacher-mobile .tb-pos-label,
++        [data-theme="dark"] body.teacher-mobile .tb-queue-meta {
++            color: var(--app-muted) !important;
++        }
++        [data-theme="dark"] body.teacher-mobile .hw-display-panel {
++            background: transparent !important;
++            box-shadow: none !important;
++        }
++        [data-theme="dark"] body.teacher-mobile #homeworkUploadSection .form-control,
++        [data-theme="dark"] body.teacher-mobile #homeworkUploadSection .form-select,
++        [data-theme="dark"] body.teacher-mobile #hwTitleInput,
++        [data-theme="dark"] body.teacher-mobile .hw-item-row-fields .form-control,
++        [data-theme="dark"] body.teacher-mobile .tb-daily-input .tb-position-input,
++        [data-theme="dark"] body.teacher-mobile .tb-daily-input .input-group-text {
++            background: var(--app-surface-3) !important;
++            color: var(--app-text) !important;
++            border-color: var(--app-border) !important;
++        }
+         body.teacher-mobile #manageClassesBtn { display: none !important; }
+         #studentDetailHistoryBlock { display: none !important; }
+         body.teacher-mobile[data-teacher-tab="messages"] #messengerMinimizeBtn { display: none; }
+-- 
+2.43.0
+

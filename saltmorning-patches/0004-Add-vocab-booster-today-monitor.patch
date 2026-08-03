@@ -1,0 +1,1508 @@
+From 0db5cb6f9a3cac76004cca0f51aed0d400cab3ba Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sat, 1 Aug 2026 09:38:07 +0000
+Subject: [PATCH] Add Vocab Booster today monitor with study timing and
+ retries.
+
+Instrument study-start/session duration/isRetry, aggregate per-student
+today metrics for teachers, and show them in Vocab Monitor cards.
+---
+ Index.html                         | 242 +++++++++++++++++++++-------
+ server/public/Student.html         |   8 +-
+ server/public/Teacher.html         | 244 ++++++++++++++++++++++-------
+ server/public/js/vocab-learn.js    |  24 ++-
+ server/public/sw.js                |   2 +-
+ server/scripts/build-public.js     |   2 +-
+ server/src/routes.js               |  31 +++-
+ server/src/vocabLearningService.js | 210 ++++++++++++++++++++++++-
+ server/teacher-src/Index.html      | 242 +++++++++++++++++++++-------
+ 9 files changed, 819 insertions(+), 186 deletions(-)
+
+diff --git a/Index.html b/Index.html
+index 56ac61a..cd4b508 100644
+--- a/Index.html
++++ b/Index.html
+@@ -5349,6 +5349,78 @@
+         [data-theme="dark"] .vocab-activity-detail,
+         [data-theme="dark"] .vocab-activity-time { color: #9db0bd; }
+ 
++        .vocab-monitor-cards {
++            display: grid;
++            grid-template-columns: 1fr;
++            gap: 0.75rem;
++        }
++        @media (min-width: 900px) {
++            .vocab-monitor-cards {
++                grid-template-columns: 1fr 1fr;
++            }
++        }
++        .vocab-monitor-card {
++            border: 1px solid rgba(59, 158, 221, 0.18);
++            border-radius: 16px;
++            background: #f8fbfe;
++            padding: 0.85rem 0.95rem;
++        }
++        .vocab-monitor-card.is-idle { opacity: 0.72; }
++        .vocab-monitor-card-head {
++            display: flex;
++            flex-wrap: wrap;
++            align-items: baseline;
++            gap: 0.35rem 0.6rem;
++            margin-bottom: 0.55rem;
++        }
++        .vocab-monitor-name {
++            font-weight: 800;
++            font-size: 1.02rem;
++            color: #163247;
++        }
++        .vocab-monitor-tier {
++            font-size: 0.8rem;
++            font-weight: 700;
++            color: #2b6f97;
++            background: rgba(59, 158, 221, 0.12);
++            border-radius: 999px;
++            padding: 0.12rem 0.55rem;
++        }
++        .vocab-monitor-grid {
++            display: grid;
++            grid-template-columns: 1fr 1fr;
++            gap: 0.4rem 0.75rem;
++            font-size: 0.84rem;
++        }
++        .vocab-monitor-grid .label {
++            display: block;
++            font-size: 0.7rem;
++            font-weight: 700;
++            letter-spacing: 0.02em;
++            text-transform: uppercase;
++            color: #6b7c8a;
++            margin-bottom: 0.05rem;
++        }
++        .vocab-monitor-grid .value {
++            color: #163247;
++            font-weight: 650;
++        }
++        .vocab-monitor-delta.pos { color: #0f766e; }
++        .vocab-monitor-delta.neg { color: #b45309; }
++        .vocab-monitor-actions {
++            display: flex;
++            flex-wrap: wrap;
++            gap: 0.4rem;
++            margin-top: 0.7rem;
++        }
++        [data-theme="dark"] .vocab-monitor-card {
++            background: rgba(255,255,255,0.04);
++            border-color: rgba(255,255,255,0.1);
++        }
++        [data-theme="dark"] .vocab-monitor-name,
++        [data-theme="dark"] .vocab-monitor-grid .value { color: #e8f1f7; }
++        [data-theme="dark"] .vocab-monitor-grid .label { color: #9db0bd; }
++
+         /* ===== Student detail page (opened from roster / attendance card) ===== */
+         body.teacher-mobile #studentDetailSection .step-label,
+         body.teacher-mobile #studentDetailSection .step-label .step-num {
+@@ -6034,7 +6106,7 @@
+                     <i class="fa-solid fa-key"></i> Portal logins
+                 </button>
+                 <button type="button" class="btn btn-sm btn-outline-info rounded-pill px-3" id="vocabLmsBtn">
+-                    <i class="fa-solid fa-layer-group"></i> Vocab LMS
++                    <i class="fa-solid fa-layer-group"></i> Vocab Monitor
+                 </button>
+                 <button type="button" class="btn btn-sm btn-outline-primary rounded-pill px-3" id="vocabActivityBtn">
+                     <i class="fa-solid fa-list-ul"></i> Vocab Activity
+@@ -6263,7 +6335,7 @@
+             <button type="button" class="teacher-more-btn" data-trigger-click="openReportBtn"><i class="fa-solid fa-chart-line"></i> Monthly Report</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassLogBtn"><i class="fa-solid fa-book-open"></i> Class Log</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassPendingBtn"><i class="fa-solid fa-hourglass-half"></i> Pending HW</button>
+-            <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-layer-group"></i> Vocab LMS</button>
++            <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-layer-group"></i> Vocab Monitor</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="vocabActivityBtn"><i class="fa-solid fa-list-ul"></i> Vocab Activity</button>
+             <button type="button" class="teacher-more-btn" id="teacherMobileThemeBtn"><i class="fa-solid fa-moon"></i> Dark Mode</button>
+         </div>
+@@ -6828,17 +6900,35 @@
+     <div class="modal-dialog modal-dialog-centered modal-xl modal-dialog-scrollable">
+         <div class="modal-content">
+             <div class="modal-header">
+-                <h5 class="modal-title"><i class="fa-solid fa-layer-group"></i> Vocab LMS — <span id="vocabLmsClassName">Class</span></h5>
++                <h5 class="modal-title"><i class="fa-solid fa-layer-group"></i> Vocab Monitor — <span id="vocabLmsClassName">Class</span></h5>
+                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+             </div>
+             <div class="modal-body">
+                 <div class="abuse-hub-tabs" role="tablist">
+-                    <button type="button" class="abuse-hub-tab active" id="vocabLmsTabOverviewBtn" data-vocab-lms-tab="overview">Overview &amp; settings</button>
++                    <button type="button" class="abuse-hub-tab active" id="vocabLmsTabOverviewBtn" data-vocab-lms-tab="overview">Today monitor</button>
+                     <button type="button" class="abuse-hub-tab" id="vocabLmsTabBankBtn" data-vocab-lms-tab="bank">Word bank</button>
+                     <button type="button" class="abuse-hub-tab" id="vocabLmsTabTiersBtn" data-vocab-lms-tab="tiers">By tier</button>
++                    <button type="button" class="abuse-hub-tab" id="vocabLmsTabSettingsBtn" data-vocab-lms-tab="settings">Settings</button>
+                 </div>
+ 
+                 <div id="vocabLmsOverviewPane" class="abuse-hub-pane">
++                    <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
++                        <div class="small text-muted" id="vocabLmsMonitorMeta">Live Vocab Booster monitor for today (Seoul).</div>
++                        <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabLmsRefreshBtn">
++                            <i class="fa-solid fa-rotate"></i> Refresh
++                        </button>
++                    </div>
++                    <div id="vocabLmsOverviewLoading" class="text-muted small py-3">Loading…</div>
++                    <div id="vocabLmsRosterWrap" class="d-none">
++                        <div id="vocabLmsMonitorCards" class="vocab-monitor-cards"></div>
++                        <p class="text-muted small mt-3 mb-0">
++                            Start time / study minutes / retry appear after students use the updated portal.
++                            Older attempts still show score, wrongs, and promotion delta from Activity logs.
++                        </p>
++                    </div>
++                </div>
++
++                <div id="vocabLmsSettingsPane" class="abuse-hub-pane d-none">
+                     <div class="row g-3 mb-3">
+                         <div class="col-md-4">
+                             <label class="form-label small mb-1">Daily target (words/set)</label>
+@@ -6853,35 +6943,10 @@
+                             <input type="number" class="form-control form-control-sm" id="vocabLmsMaxSessions" min="1" max="5" value="3">
+                         </div>
+                     </div>
+-                    <p class="text-muted small mb-3 mb-md-2">Each passed set → Lucky Draw ticket + tier dollar bonus. Extra sets also build tier mastery (80% to promote).</p>
+-                    <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+-                        <button type="button" class="btn btn-sm btn-primary" id="vocabLmsSaveSettingsBtn">
+-                            <i class="fa-solid fa-floppy-disk"></i> Save settings
+-                        </button>
+-                        <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabLmsRefreshBtn">
+-                            <i class="fa-solid fa-rotate"></i> Refresh
+-                        </button>
+-                    </div>
+-                    <div id="vocabLmsOverviewLoading" class="text-muted small py-3">Loading…</div>
+-                    <div class="table-responsive d-none" id="vocabLmsRosterWrap">
+-                        <table class="table table-sm table-hover align-middle">
+-                            <thead>
+-                                <tr>
+-                                    <th>Student</th>
+-                                    <th>Tier</th>
+-                                    <th>Streak</th>
+-                                    <th>Today</th>
+-                                    <th>Test</th>
+-                                    <th>Actions</th>
+-                                </tr>
+-                            </thead>
+-                            <tbody id="vocabLmsRosterBody"></tbody>
+-                        </table>
+-                        <p class="text-muted small mt-2 mb-0">
+-                            <strong>Reset Placement</strong> sets the student’s grade and lets them take the Placement test again.
+-                            Gift grants a random Lucky Draw ticket.
+-                        </p>
+-                    </div>
++                    <p class="text-muted small mb-3">Each passed set → Lucky Draw ticket + tier dollar bonus. Extra sets also build tier mastery (80% to promote).</p>
++                    <button type="button" class="btn btn-sm btn-primary" id="vocabLmsSaveSettingsBtn">
++                        <i class="fa-solid fa-floppy-disk"></i> Save settings
++                    </button>
+                 </div>
+ 
+                 <div id="vocabLmsBankPane" class="abuse-hub-pane d-none">
+@@ -16268,10 +16333,14 @@
+         document.getElementById('vocabLmsTabBankBtn').classList.toggle('active', tab === 'bank');
+         const tiersBtn = document.getElementById('vocabLmsTabTiersBtn');
+         if (tiersBtn) tiersBtn.classList.toggle('active', tab === 'tiers');
++        const settingsBtn = document.getElementById('vocabLmsTabSettingsBtn');
++        if (settingsBtn) settingsBtn.classList.toggle('active', tab === 'settings');
+         document.getElementById('vocabLmsOverviewPane').classList.toggle('d-none', tab !== 'overview');
+         document.getElementById('vocabLmsBankPane').classList.toggle('d-none', tab !== 'bank');
+         const tiersPane = document.getElementById('vocabLmsTiersPane');
+         if (tiersPane) tiersPane.classList.toggle('d-none', tab !== 'tiers');
++        const settingsPane = document.getElementById('vocabLmsSettingsPane');
++        if (settingsPane) settingsPane.classList.toggle('d-none', tab !== 'settings');
+         if (tab === 'bank') resumeVocabGenJobIfAny();
+         if (tab === 'tiers') refreshVocabLmsTierStats();
+     }
+@@ -16288,11 +16357,13 @@
+                 document.getElementById('vocabLmsPassThreshold').value = vocabLmsState.settings.pass_threshold != null ? vocabLmsState.settings.pass_threshold : 100;
+                 var maxSessEl = document.getElementById('vocabLmsMaxSessions');
+                 if (maxSessEl) maxSessEl.value = vocabLmsState.settings.max_daily_sessions || 3;
+-                renderVocabLmsRoster(res.students || []);
++                renderVocabLmsRoster(res.students || [], res.questDate);
+                 document.getElementById('vocabLmsOverviewLoading').classList.add('d-none');
++                document.getElementById('vocabLmsOverviewLoading').textContent = 'Loading…';
+                 document.getElementById('vocabLmsRosterWrap').classList.remove('d-none');
+             })
+             .catch(function(err) {
++                document.getElementById('vocabLmsOverviewLoading').classList.remove('d-none');
+                 document.getElementById('vocabLmsOverviewLoading').textContent = err.message || 'Could not load roster.';
+             });
+     }
+@@ -16364,41 +16435,100 @@
+         setText('vocabLmsTierFootMissing', missing);
+     }
+ 
+-    function renderVocabLmsRoster(students) {
+-        const body = document.getElementById('vocabLmsRosterBody');
++    function formatVocabMonitorTime(iso) {
++        if (!iso) return '—';
++        try {
++            var d = new Date(iso);
++            if (isNaN(d.getTime())) return '—';
++            return d.toLocaleString('en-CA', {
++                timeZone: 'Asia/Seoul',
++                month: 'short',
++                day: 'numeric',
++                hour: '2-digit',
++                minute: '2-digit',
++                hour12: false
++            });
++        } catch (e) {
++            return '—';
++        }
++    }
++
++    function formatVocabMonitorDelta(n) {
++        var v = Number(n) || 0;
++        if (!v) return '<span class="vocab-monitor-delta">0</span>';
++        var cls = v > 0 ? 'pos' : 'neg';
++        return '<span class="vocab-monitor-delta ' + cls + '">' + (v > 0 ? '+' : '') + v + '</span>';
++    }
++
++    function renderVocabLmsRoster(students, questDate) {
++        const cards = document.getElementById('vocabLmsMonitorCards');
++        const meta = document.getElementById('vocabLmsMonitorMeta');
++        if (!cards) return;
++        if (meta) {
++            var active = (students || []).filter(function(s) { return s.activeToday; }).length;
++            meta.textContent =
++                'Today monitor' + (questDate ? ' · ' + questDate : '') +
++                ' (Seoul) · ' + active + ' active / ' + (students || []).length + ' students';
++        }
+         if (!students.length) {
+-            body.innerHTML = '<tr><td colspan="6" class="text-muted small">No enrolled students.</td></tr>';
++            cards.innerHTML = '<div class="text-muted small py-2">No enrolled students.</div>';
+             return;
+         }
+-        body.innerHTML = students.map(function(s) {
+-            const streak = (s.streakDays || 0) + (s.streakDays ? ' 🔥' : '');
+-            const testBadge = s.todayTestPassed
+-                ? '<span class="badge bg-success">Passed' + (s.todayTestScore != null ? ' (' + s.todayTestScore + '%)' : '') + '</span>'
+-                : '<span class="badge bg-secondary">Not yet</span>';
+-            return '<tr>' +
+-                '<td>' + escapeHtml(s.name || s.studentId) + '</td>' +
+-                '<td>' + escapeHtml(s.tierName || '—') + (s.gradeLevel ? ' <span class="text-muted small">(Grade ' + s.gradeLevel + ')</span>' : '') + '</td>' +
+-                '<td>' + streak + '</td>' +
+-                '<td>' + (s.todayStudied || 0) + ' / ' + (s.todayTarget || '—') + '</td>' +
+-                '<td>' + testBadge + '</td>' +
+-                '<td class="text-nowrap">' +
+-                '<button type="button" class="btn btn-outline-secondary btn-sm vocab-lms-override-btn" data-student-id="' + escapeHtml(s.studentId) + '" title="Set grade and unlock Placement retake">' +
+-                '<i class="fa-solid fa-rotate-left"></i> Reset Placement</button> ' +
+-                '<button type="button" class="btn btn-outline-warning btn-sm vocab-lms-reward-btn" data-student-id="' + escapeHtml(s.studentId) + '" title="Grant a random Lucky Draw ticket">' +
+-                '<i class="fa-solid fa-gift"></i></button>' +
+-                '</td></tr>';
++        cards.innerHTML = students.map(function(s) {
++            var tier = s.tierName
++                ? escapeHtml(s.tierName) + (s.gradeLevel ? ' · G' + s.gradeLevel : '')
++                : 'Not placed';
++            var setsLabel = (s.setsPassed || 0) + ' passed / ' + (s.setsAttempted || 0) + ' tries';
++            var wrongLabel = (s.wrongTotal || 0) + ' wrong' +
++                (s.correctTotal ? ' · ' + s.correctTotal + ' correct' : '');
++            var promo = s.promotionScore != null
++                ? (s.promotionScore + ' / ' + (s.promotionScoreMax || 400) +
++                    (s.remainingToPromote != null ? ' · ' + s.remainingToPromote + ' to up' : ''))
++                : '—';
++            var mins = s.studyMinutes != null ? s.studyMinutes : 0;
++            return '<div class="vocab-monitor-card' + (s.activeToday ? '' : ' is-idle') + '">' +
++                '<div class="vocab-monitor-card-head">' +
++                '<span class="vocab-monitor-name">' + escapeHtml(s.name || s.studentId) + '</span>' +
++                '<span class="vocab-monitor-tier">' + tier + '</span>' +
++                (s.retried ? '<span class="badge bg-warning text-dark">Restudy</span>' : '') +
++                (s.todayTestPassed ? '<span class="badge bg-success">Passed today</span>' : '') +
++                '</div>' +
++                '<div class="vocab-monitor-grid">' +
++                '<div><span class="label">Started</span><span class="value">' +
++                escapeHtml(formatVocabMonitorTime(s.studyStartedAt)) + '</span></div>' +
++                '<div><span class="label">Study time</span><span class="value">' +
++                (mins ? mins + ' min' : '—') + '</span></div>' +
++                '<div><span class="label">Sets</span><span class="value">' + escapeHtml(setsLabel) + '</span></div>' +
++                '<div><span class="label">Wrongs</span><span class="value">' + escapeHtml(wrongLabel) + '</span></div>' +
++                '<div><span class="label">Promo Δ today</span><span class="value">' +
++                formatVocabMonitorDelta(s.scoreDeltaToday) + '</span></div>' +
++                '<div><span class="label">Promotion</span><span class="value">' + escapeHtml(promo) + '</span></div>' +
++                '</div>' +
++                '<div class="vocab-monitor-actions">' +
++                '<button type="button" class="btn btn-outline-secondary btn-sm vocab-lms-override-btn" data-student-id="' +
++                escapeHtml(s.studentId) + '"><i class="fa-solid fa-rotate-left"></i> Reset Placement</button>' +
++                '<button type="button" class="btn btn-outline-warning btn-sm vocab-lms-reward-btn" data-student-id="' +
++                escapeHtml(s.studentId) + '"><i class="fa-solid fa-gift"></i></button>' +
++                '<button type="button" class="btn btn-outline-primary btn-sm vocab-lms-activity-btn" data-student-id="' +
++                escapeHtml(s.studentId) + '"><i class="fa-solid fa-list-ul"></i> Log</button>' +
++                '</div></div>';
+         }).join('');
+ 
+-        body.querySelectorAll('.vocab-lms-override-btn').forEach(function(btn) {
++        cards.querySelectorAll('.vocab-lms-override-btn').forEach(function(btn) {
+             btn.addEventListener('click', function() {
+                 promptVocabOverride(btn.getAttribute('data-student-id'));
+             });
+         });
+-        body.querySelectorAll('.vocab-lms-reward-btn').forEach(function(btn) {
++        cards.querySelectorAll('.vocab-lms-reward-btn').forEach(function(btn) {
+             btn.addEventListener('click', function() {
+                 grantVocabRewardManually(btn.getAttribute('data-student-id'));
+             });
+         });
++        cards.querySelectorAll('.vocab-lms-activity-btn').forEach(function(btn) {
++            btn.addEventListener('click', function() {
++                openVocabActivityModal();
++            });
++        });
+     }
+ 
+     function promptVocabOverride(studentId) {
+diff --git a/server/public/Student.html b/server/public/Student.html
+index c5a4a86..3e03efa 100644
+--- a/server/public/Student.html
++++ b/server/public/Student.html
+@@ -11,7 +11,7 @@
+     </script>
+     <script>
+         (function() {
+-            var PORTAL_BUILD = '2026-08-01.04';
++            var PORTAL_BUILD = '2026-08-01.05';
+             window.PORTAL_BUILD = PORTAL_BUILD;
+             var KEY = 'mrpark_portal_build';
+             try {
+@@ -2271,9 +2271,9 @@
+             .stamp-mark { width: 54px; height: 54px; margin-left: -27px; margin-top: -27px; }
+         }
+     </style>
+-<link rel="stylesheet" href="/css/vocab-learn.css?v=2026-08-01.04">
+-<script src="/js/vocab-mock-data.js?v=2026-08-01.04" defer></script>
+-<script src="/js/vocab-learn.js?v=2026-08-01.04" defer></script>
++<link rel="stylesheet" href="/css/vocab-learn.css?v=2026-08-01.05">
++<script src="/js/vocab-mock-data.js?v=2026-08-01.05" defer></script>
++<script src="/js/vocab-learn.js?v=2026-08-01.05" defer></script>
+ </head>
+ <body>
+ <div class="wrap">
+diff --git a/server/public/Teacher.html b/server/public/Teacher.html
+index 6a29aad..510dc43 100644
+--- a/server/public/Teacher.html
++++ b/server/public/Teacher.html
+@@ -49,7 +49,7 @@
+         // deploy; on mismatch we force exactly one hard reload (with a cache-busting
+         // query param) so the home-screen icon can never get stuck on stale UI.
+         (function() {
+-            var APP_BUILD = '2026-08-01.04';
++            var APP_BUILD = '2026-08-01.05';
+             window.MRPARK_BUILD = APP_BUILD;
+             var KEY = 'mrpark_app_build';
+             try {
+@@ -5495,6 +5495,78 @@
+         [data-theme="dark"] .vocab-activity-detail,
+         [data-theme="dark"] .vocab-activity-time { color: #9db0bd; }
+ 
++        .vocab-monitor-cards {
++            display: grid;
++            grid-template-columns: 1fr;
++            gap: 0.75rem;
++        }
++        @media (min-width: 900px) {
++            .vocab-monitor-cards {
++                grid-template-columns: 1fr 1fr;
++            }
++        }
++        .vocab-monitor-card {
++            border: 1px solid rgba(59, 158, 221, 0.18);
++            border-radius: 16px;
++            background: #f8fbfe;
++            padding: 0.85rem 0.95rem;
++        }
++        .vocab-monitor-card.is-idle { opacity: 0.72; }
++        .vocab-monitor-card-head {
++            display: flex;
++            flex-wrap: wrap;
++            align-items: baseline;
++            gap: 0.35rem 0.6rem;
++            margin-bottom: 0.55rem;
++        }
++        .vocab-monitor-name {
++            font-weight: 800;
++            font-size: 1.02rem;
++            color: #163247;
++        }
++        .vocab-monitor-tier {
++            font-size: 0.8rem;
++            font-weight: 700;
++            color: #2b6f97;
++            background: rgba(59, 158, 221, 0.12);
++            border-radius: 999px;
++            padding: 0.12rem 0.55rem;
++        }
++        .vocab-monitor-grid {
++            display: grid;
++            grid-template-columns: 1fr 1fr;
++            gap: 0.4rem 0.75rem;
++            font-size: 0.84rem;
++        }
++        .vocab-monitor-grid .label {
++            display: block;
++            font-size: 0.7rem;
++            font-weight: 700;
++            letter-spacing: 0.02em;
++            text-transform: uppercase;
++            color: #6b7c8a;
++            margin-bottom: 0.05rem;
++        }
++        .vocab-monitor-grid .value {
++            color: #163247;
++            font-weight: 650;
++        }
++        .vocab-monitor-delta.pos { color: #0f766e; }
++        .vocab-monitor-delta.neg { color: #b45309; }
++        .vocab-monitor-actions {
++            display: flex;
++            flex-wrap: wrap;
++            gap: 0.4rem;
++            margin-top: 0.7rem;
++        }
++        [data-theme="dark"] .vocab-monitor-card {
++            background: rgba(255,255,255,0.04);
++            border-color: rgba(255,255,255,0.1);
++        }
++        [data-theme="dark"] .vocab-monitor-name,
++        [data-theme="dark"] .vocab-monitor-grid .value { color: #e8f1f7; }
++        [data-theme="dark"] .vocab-monitor-grid .label { color: #9db0bd; }
++
+         /* ===== Student detail page (opened from roster / attendance card) ===== */
+         body.teacher-mobile #studentDetailSection .step-label,
+         body.teacher-mobile #studentDetailSection .step-label .step-num {
+@@ -6180,7 +6252,7 @@
+                     <i class="fa-solid fa-key"></i> Portal logins
+                 </button>
+                 <button type="button" class="btn btn-sm btn-outline-info rounded-pill px-3" id="vocabLmsBtn">
+-                    <i class="fa-solid fa-layer-group"></i> Vocab LMS
++                    <i class="fa-solid fa-layer-group"></i> Vocab Monitor
+                 </button>
+                 <button type="button" class="btn btn-sm btn-outline-primary rounded-pill px-3" id="vocabActivityBtn">
+                     <i class="fa-solid fa-list-ul"></i> Vocab Activity
+@@ -6409,7 +6481,7 @@
+             <button type="button" class="teacher-more-btn" data-trigger-click="openReportBtn"><i class="fa-solid fa-chart-line"></i> Monthly Report</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassLogBtn"><i class="fa-solid fa-book-open"></i> Class Log</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassPendingBtn"><i class="fa-solid fa-hourglass-half"></i> Pending HW</button>
+-            <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-layer-group"></i> Vocab LMS</button>
++            <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-layer-group"></i> Vocab Monitor</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="vocabActivityBtn"><i class="fa-solid fa-list-ul"></i> Vocab Activity</button>
+             <button type="button" class="teacher-more-btn" id="teacherMobileThemeBtn"><i class="fa-solid fa-moon"></i> Dark Mode</button>
+         </div>
+@@ -6974,17 +7046,35 @@
+     <div class="modal-dialog modal-dialog-centered modal-xl modal-dialog-scrollable">
+         <div class="modal-content">
+             <div class="modal-header">
+-                <h5 class="modal-title"><i class="fa-solid fa-layer-group"></i> Vocab LMS — <span id="vocabLmsClassName">Class</span></h5>
++                <h5 class="modal-title"><i class="fa-solid fa-layer-group"></i> Vocab Monitor — <span id="vocabLmsClassName">Class</span></h5>
+                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+             </div>
+             <div class="modal-body">
+                 <div class="abuse-hub-tabs" role="tablist">
+-                    <button type="button" class="abuse-hub-tab active" id="vocabLmsTabOverviewBtn" data-vocab-lms-tab="overview">Overview &amp; settings</button>
++                    <button type="button" class="abuse-hub-tab active" id="vocabLmsTabOverviewBtn" data-vocab-lms-tab="overview">Today monitor</button>
+                     <button type="button" class="abuse-hub-tab" id="vocabLmsTabBankBtn" data-vocab-lms-tab="bank">Word bank</button>
+                     <button type="button" class="abuse-hub-tab" id="vocabLmsTabTiersBtn" data-vocab-lms-tab="tiers">By tier</button>
++                    <button type="button" class="abuse-hub-tab" id="vocabLmsTabSettingsBtn" data-vocab-lms-tab="settings">Settings</button>
+                 </div>
+ 
+                 <div id="vocabLmsOverviewPane" class="abuse-hub-pane">
++                    <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
++                        <div class="small text-muted" id="vocabLmsMonitorMeta">Live Vocab Booster monitor for today (Seoul).</div>
++                        <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabLmsRefreshBtn">
++                            <i class="fa-solid fa-rotate"></i> Refresh
++                        </button>
++                    </div>
++                    <div id="vocabLmsOverviewLoading" class="text-muted small py-3">Loading…</div>
++                    <div id="vocabLmsRosterWrap" class="d-none">
++                        <div id="vocabLmsMonitorCards" class="vocab-monitor-cards"></div>
++                        <p class="text-muted small mt-3 mb-0">
++                            Start time / study minutes / retry appear after students use the updated portal.
++                            Older attempts still show score, wrongs, and promotion delta from Activity logs.
++                        </p>
++                    </div>
++                </div>
++
++                <div id="vocabLmsSettingsPane" class="abuse-hub-pane d-none">
+                     <div class="row g-3 mb-3">
+                         <div class="col-md-4">
+                             <label class="form-label small mb-1">Daily target (words/set)</label>
+@@ -6999,35 +7089,10 @@
+                             <input type="number" class="form-control form-control-sm" id="vocabLmsMaxSessions" min="1" max="5" value="3">
+                         </div>
+                     </div>
+-                    <p class="text-muted small mb-3 mb-md-2">Each passed set → Lucky Draw ticket + tier dollar bonus. Extra sets also build tier mastery (80% to promote).</p>
+-                    <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+-                        <button type="button" class="btn btn-sm btn-primary" id="vocabLmsSaveSettingsBtn">
+-                            <i class="fa-solid fa-floppy-disk"></i> Save settings
+-                        </button>
+-                        <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabLmsRefreshBtn">
+-                            <i class="fa-solid fa-rotate"></i> Refresh
+-                        </button>
+-                    </div>
+-                    <div id="vocabLmsOverviewLoading" class="text-muted small py-3">Loading…</div>
+-                    <div class="table-responsive d-none" id="vocabLmsRosterWrap">
+-                        <table class="table table-sm table-hover align-middle">
+-                            <thead>
+-                                <tr>
+-                                    <th>Student</th>
+-                                    <th>Tier</th>
+-                                    <th>Streak</th>
+-                                    <th>Today</th>
+-                                    <th>Test</th>
+-                                    <th>Actions</th>
+-                                </tr>
+-                            </thead>
+-                            <tbody id="vocabLmsRosterBody"></tbody>
+-                        </table>
+-                        <p class="text-muted small mt-2 mb-0">
+-                            <strong>Reset Placement</strong> sets the student’s grade and lets them take the Placement test again.
+-                            Gift grants a random Lucky Draw ticket.
+-                        </p>
+-                    </div>
++                    <p class="text-muted small mb-3">Each passed set → Lucky Draw ticket + tier dollar bonus. Extra sets also build tier mastery (80% to promote).</p>
++                    <button type="button" class="btn btn-sm btn-primary" id="vocabLmsSaveSettingsBtn">
++                        <i class="fa-solid fa-floppy-disk"></i> Save settings
++                    </button>
+                 </div>
+ 
+                 <div id="vocabLmsBankPane" class="abuse-hub-pane d-none">
+@@ -16408,10 +16473,14 @@
+         document.getElementById('vocabLmsTabBankBtn').classList.toggle('active', tab === 'bank');
+         const tiersBtn = document.getElementById('vocabLmsTabTiersBtn');
+         if (tiersBtn) tiersBtn.classList.toggle('active', tab === 'tiers');
++        const settingsBtn = document.getElementById('vocabLmsTabSettingsBtn');
++        if (settingsBtn) settingsBtn.classList.toggle('active', tab === 'settings');
+         document.getElementById('vocabLmsOverviewPane').classList.toggle('d-none', tab !== 'overview');
+         document.getElementById('vocabLmsBankPane').classList.toggle('d-none', tab !== 'bank');
+         const tiersPane = document.getElementById('vocabLmsTiersPane');
+         if (tiersPane) tiersPane.classList.toggle('d-none', tab !== 'tiers');
++        const settingsPane = document.getElementById('vocabLmsSettingsPane');
++        if (settingsPane) settingsPane.classList.toggle('d-none', tab !== 'settings');
+         if (tab === 'bank') resumeVocabGenJobIfAny();
+         if (tab === 'tiers') refreshVocabLmsTierStats();
+     }
+@@ -16428,11 +16497,13 @@
+                 document.getElementById('vocabLmsPassThreshold').value = vocabLmsState.settings.pass_threshold != null ? vocabLmsState.settings.pass_threshold : 100;
+                 var maxSessEl = document.getElementById('vocabLmsMaxSessions');
+                 if (maxSessEl) maxSessEl.value = vocabLmsState.settings.max_daily_sessions || 3;
+-                renderVocabLmsRoster(res.students || []);
++                renderVocabLmsRoster(res.students || [], res.questDate);
+                 document.getElementById('vocabLmsOverviewLoading').classList.add('d-none');
++                document.getElementById('vocabLmsOverviewLoading').textContent = 'Loading…';
+                 document.getElementById('vocabLmsRosterWrap').classList.remove('d-none');
+             })
+             .catch(function(err) {
++                document.getElementById('vocabLmsOverviewLoading').classList.remove('d-none');
+                 document.getElementById('vocabLmsOverviewLoading').textContent = err.message || 'Could not load roster.';
+             });
+     }
+@@ -16504,41 +16575,100 @@
+         setText('vocabLmsTierFootMissing', missing);
+     }
+ 
+-    function renderVocabLmsRoster(students) {
+-        const body = document.getElementById('vocabLmsRosterBody');
++    function formatVocabMonitorTime(iso) {
++        if (!iso) return '—';
++        try {
++            var d = new Date(iso);
++            if (isNaN(d.getTime())) return '—';
++            return d.toLocaleString('en-CA', {
++                timeZone: 'Asia/Seoul',
++                month: 'short',
++                day: 'numeric',
++                hour: '2-digit',
++                minute: '2-digit',
++                hour12: false
++            });
++        } catch (e) {
++            return '—';
++        }
++    }
++
++    function formatVocabMonitorDelta(n) {
++        var v = Number(n) || 0;
++        if (!v) return '<span class="vocab-monitor-delta">0</span>';
++        var cls = v > 0 ? 'pos' : 'neg';
++        return '<span class="vocab-monitor-delta ' + cls + '">' + (v > 0 ? '+' : '') + v + '</span>';
++    }
++
++    function renderVocabLmsRoster(students, questDate) {
++        const cards = document.getElementById('vocabLmsMonitorCards');
++        const meta = document.getElementById('vocabLmsMonitorMeta');
++        if (!cards) return;
++        if (meta) {
++            var active = (students || []).filter(function(s) { return s.activeToday; }).length;
++            meta.textContent =
++                'Today monitor' + (questDate ? ' · ' + questDate : '') +
++                ' (Seoul) · ' + active + ' active / ' + (students || []).length + ' students';
++        }
+         if (!students.length) {
+-            body.innerHTML = '<tr><td colspan="6" class="text-muted small">No enrolled students.</td></tr>';
++            cards.innerHTML = '<div class="text-muted small py-2">No enrolled students.</div>';
+             return;
+         }
+-        body.innerHTML = students.map(function(s) {
+-            const streak = (s.streakDays || 0) + (s.streakDays ? ' 🔥' : '');
+-            const testBadge = s.todayTestPassed
+-                ? '<span class="badge bg-success">Passed' + (s.todayTestScore != null ? ' (' + s.todayTestScore + '%)' : '') + '</span>'
+-                : '<span class="badge bg-secondary">Not yet</span>';
+-            return '<tr>' +
+-                '<td>' + escapeHtml(s.name || s.studentId) + '</td>' +
+-                '<td>' + escapeHtml(s.tierName || '—') + (s.gradeLevel ? ' <span class="text-muted small">(Grade ' + s.gradeLevel + ')</span>' : '') + '</td>' +
+-                '<td>' + streak + '</td>' +
+-                '<td>' + (s.todayStudied || 0) + ' / ' + (s.todayTarget || '—') + '</td>' +
+-                '<td>' + testBadge + '</td>' +
+-                '<td class="text-nowrap">' +
+-                '<button type="button" class="btn btn-outline-secondary btn-sm vocab-lms-override-btn" data-student-id="' + escapeHtml(s.studentId) + '" title="Set grade and unlock Placement retake">' +
+-                '<i class="fa-solid fa-rotate-left"></i> Reset Placement</button> ' +
+-                '<button type="button" class="btn btn-outline-warning btn-sm vocab-lms-reward-btn" data-student-id="' + escapeHtml(s.studentId) + '" title="Grant a random Lucky Draw ticket">' +
+-                '<i class="fa-solid fa-gift"></i></button>' +
+-                '</td></tr>';
++        cards.innerHTML = students.map(function(s) {
++            var tier = s.tierName
++                ? escapeHtml(s.tierName) + (s.gradeLevel ? ' · G' + s.gradeLevel : '')
++                : 'Not placed';
++            var setsLabel = (s.setsPassed || 0) + ' passed / ' + (s.setsAttempted || 0) + ' tries';
++            var wrongLabel = (s.wrongTotal || 0) + ' wrong' +
++                (s.correctTotal ? ' · ' + s.correctTotal + ' correct' : '');
++            var promo = s.promotionScore != null
++                ? (s.promotionScore + ' / ' + (s.promotionScoreMax || 400) +
++                    (s.remainingToPromote != null ? ' · ' + s.remainingToPromote + ' to up' : ''))
++                : '—';
++            var mins = s.studyMinutes != null ? s.studyMinutes : 0;
++            return '<div class="vocab-monitor-card' + (s.activeToday ? '' : ' is-idle') + '">' +
++                '<div class="vocab-monitor-card-head">' +
++                '<span class="vocab-monitor-name">' + escapeHtml(s.name || s.studentId) + '</span>' +
++                '<span class="vocab-monitor-tier">' + tier + '</span>' +
++                (s.retried ? '<span class="badge bg-warning text-dark">Restudy</span>' : '') +
++                (s.todayTestPassed ? '<span class="badge bg-success">Passed today</span>' : '') +
++                '</div>' +
++                '<div class="vocab-monitor-grid">' +
++                '<div><span class="label">Started</span><span class="value">' +
++                escapeHtml(formatVocabMonitorTime(s.studyStartedAt)) + '</span></div>' +
++                '<div><span class="label">Study time</span><span class="value">' +
++                (mins ? mins + ' min' : '—') + '</span></div>' +
++                '<div><span class="label">Sets</span><span class="value">' + escapeHtml(setsLabel) + '</span></div>' +
++                '<div><span class="label">Wrongs</span><span class="value">' + escapeHtml(wrongLabel) + '</span></div>' +
++                '<div><span class="label">Promo Δ today</span><span class="value">' +
++                formatVocabMonitorDelta(s.scoreDeltaToday) + '</span></div>' +
++                '<div><span class="label">Promotion</span><span class="value">' + escapeHtml(promo) + '</span></div>' +
++                '</div>' +
++                '<div class="vocab-monitor-actions">' +
++                '<button type="button" class="btn btn-outline-secondary btn-sm vocab-lms-override-btn" data-student-id="' +
++                escapeHtml(s.studentId) + '"><i class="fa-solid fa-rotate-left"></i> Reset Placement</button>' +
++                '<button type="button" class="btn btn-outline-warning btn-sm vocab-lms-reward-btn" data-student-id="' +
++                escapeHtml(s.studentId) + '"><i class="fa-solid fa-gift"></i></button>' +
++                '<button type="button" class="btn btn-outline-primary btn-sm vocab-lms-activity-btn" data-student-id="' +
++                escapeHtml(s.studentId) + '"><i class="fa-solid fa-list-ul"></i> Log</button>' +
++                '</div></div>';
+         }).join('');
+ 
+-        body.querySelectorAll('.vocab-lms-override-btn').forEach(function(btn) {
++        cards.querySelectorAll('.vocab-lms-override-btn').forEach(function(btn) {
+             btn.addEventListener('click', function() {
+                 promptVocabOverride(btn.getAttribute('data-student-id'));
+             });
+         });
+-        body.querySelectorAll('.vocab-lms-reward-btn').forEach(function(btn) {
++        cards.querySelectorAll('.vocab-lms-reward-btn').forEach(function(btn) {
+             btn.addEventListener('click', function() {
+                 grantVocabRewardManually(btn.getAttribute('data-student-id'));
+             });
+         });
++        cards.querySelectorAll('.vocab-lms-activity-btn').forEach(function(btn) {
++            btn.addEventListener('click', function() {
++                openVocabActivityModal();
++            });
++        });
+     }
+ 
+     function promptVocabOverride(studentId) {
+diff --git a/server/public/js/vocab-learn.js b/server/public/js/vocab-learn.js
+index 6657730..1715212 100644
+--- a/server/public/js/vocab-learn.js
++++ b/server/public/js/vocab-learn.js
+@@ -76,10 +76,24 @@
+       forceAnotherSet: false,
+       alreadyPassedToday: false,
+       isRetryAttempt: false,
+-      retryWordIds: {}
++      retryWordIds: {},
++      setStartedAt: 0
+     };
+   }
+ 
++  function notifyStudySessionStart(isRetry, wordCount) {
++    var startedAt = new Date().toISOString();
++    apiFetch('/api/student/vocab/session/start', {
++      method: 'POST',
++      body: {
++        isRetry: !!isRetry,
++        wordCount: wordCount || 0,
++        startedAt: startedAt
++      }
++    }).catch(function () { /* best-effort teacher monitor signal */ });
++    return startedAt;
++  }
++
+   /**
+    * Wipe in-memory vocab UI when the logged-in student changes (logout / switch account).
+    * Without this, the previous student's tier hero sticks until a full page reload.
+@@ -1403,6 +1417,8 @@
+     quest.studyIndex = 0;
+     quest.studyMaxIndex = 0;
+     quest.phase = 'study';
++    quest.setStartedAt = Date.now();
++    notifyStudySessionStart(quest.isRetryAttempt, quest.queue.length);
+     renderQuestStudyCard();
+   }
+ 
+@@ -1729,11 +1745,17 @@
+       return true;
+     });
+ 
++    var setRetry = !!quest.isRetryAttempt;
++    var durationMs = quest.setStartedAt ? Math.max(0, Date.now() - quest.setStartedAt) : 0;
++    var startedAt = quest.setStartedAt ? new Date(quest.setStartedAt).toISOString() : null;
+     apiFetch('/api/student/vocab/daily-test/submit', {
+       method: 'POST',
+       body: {
+         correctCount: correctCount,
+         totalCount: total,
++        isRetry: setRetry,
++        durationMs: durationMs,
++        startedAt: startedAt,
+         answers: quest.testAnswers.map(function (a) {
+           var wid = a.word && a.word.word_id;
+           var isRetry = !!(quest.isRetryAttempt || (wid && quest.retryWordIds[String(wid)]));
+diff --git a/server/public/sw.js b/server/public/sw.js
+index c208aa2..34f020e 100644
+--- a/server/public/sw.js
++++ b/server/public/sw.js
+@@ -1,4 +1,4 @@
+-const CACHE = 'mrpark-shell-2026-08-01.04';
++const CACHE = 'mrpark-shell-2026-08-01.05';
+ const SHELL = [
+   '/',
+   '/offline.html',
+diff --git a/server/scripts/build-public.js b/server/scripts/build-public.js
+index fa524cf..53ecaf4 100644
+--- a/server/scripts/build-public.js
++++ b/server/scripts/build-public.js
+@@ -7,7 +7,7 @@
+ const fs = require('fs');
+ const path = require('path');
+ 
+-const PORTAL_BUILD = '2026-08-01.04';
++const PORTAL_BUILD = '2026-08-01.05';
+ 
+ const serverDir = path.join(__dirname, '..');
+ const repoRoot = path.join(serverDir, '..');
+diff --git a/server/src/routes.js b/server/src/routes.js
+index d615f91..133c5ae 100644
+--- a/server/src/routes.js
++++ b/server/src/routes.js
+@@ -72,6 +72,7 @@ const {
+   savePlacementResult,
+   getDailyQueue,
+   recordReview,
++  markStudySessionStart,
+   recordDailyTestResult,
+   getStudentVocabSummary,
+   getClassSettings: getVocabClassSettings,
+@@ -227,7 +228,7 @@ router.get('/health', (req, res) => {
+   res.json({
+     ok: true,
+     service: 'mrpark-class-api',
+-    portalBuild: '2026-08-01.04',
++    portalBuild: '2026-08-01.05',
+     pwaEnabled: true,
+     phase: 5,
+     supabase: isSupabaseEnabled(),
+@@ -1955,6 +1956,23 @@ router.post('/student/vocab/review', requireStudentAuth, async (req, res) => {
+   }
+ });
+ 
++router.post('/student/vocab/session/start', requireStudentAuth, async (req, res) => {
++  try {
++    const { studentId, classId } = req.studentSession;
++    const body = req.body || {};
++    res.json(
++      await markStudySessionStart(studentId, classId, {
++        isRetry: !!body.isRetry,
++        wordCount: body.wordCount,
++        startedAt: body.startedAt
++      })
++    );
++  } catch (e) {
++    console.error('POST /student/vocab/session/start', e);
++    res.status(400).json({ error: e.message || 'Could not start study session' });
++  }
++});
++
+ router.post('/student/vocab/daily-test/submit', requireStudentAuth, async (req, res) => {
+   try {
+     const { studentId, classId } = req.studentSession;
+@@ -1969,7 +1987,16 @@ router.post('/student/vocab/daily-test/submit', requireStudentAuth, async (req,
+         }
+       }
+     }
+-    res.json(await recordDailyTestResult(studentId, classId, body.correctCount, body.totalCount));
++    const setRetry =
++      !!body.isRetry ||
++      (Array.isArray(body.answers) && body.answers.some(function (a) { return a && a.isRetry; }));
++    res.json(
++      await recordDailyTestResult(studentId, classId, body.correctCount, body.totalCount, {
++        isRetry: setRetry,
++        durationMs: body.durationMs,
++        startedAt: body.startedAt || body.studyStartedAt
++      })
++    );
+   } catch (e) {
+     console.error('POST /student/vocab/daily-test/submit', e);
+     res.status(400).json({ error: e.message || 'Could not submit daily test' });
+diff --git a/server/src/vocabLearningService.js b/server/src/vocabLearningService.js
+index 87c0538..5719c15 100644
+--- a/server/src/vocabLearningService.js
++++ b/server/src/vocabLearningService.js
+@@ -853,7 +853,58 @@ async function applyMasteryPromotion(studentId) {
+   };
+ }
+ 
+-async function recordDailyTestResult(studentId, classId, correctCount, totalCount) {
++async function markStudySessionStart(studentId, classId, opts) {
++  opts = opts || {};
++  studentId = String(studentId);
++  classId = classId ? String(classId) : null;
++  const settings = await getClassSettings(classId);
++  const daily = await getOrCreateDailyProgress(studentId, classId, settings.daily_target);
++  const isRetry = !!opts.isRetry;
++  const wordCount = Math.max(0, Math.round(Number(opts.wordCount) || 0));
++  const startedAt = opts.startedAt ? String(opts.startedAt) : new Date().toISOString();
++  const studentName = await lookupStudentName(studentId);
++  try {
++    await logVocabActivity({
++      classId: classId,
++      studentId: studentId,
++      studentName: studentName,
++      kind: 'vocab_study_start',
++      title: isRetry ? 'Restudy started' : 'Study started',
++      detail:
++        (isRetry ? 'Restudy' : 'Study') +
++        (wordCount ? ' · ' + wordCount + ' word' + (wordCount === 1 ? '' : 's') : '') +
++        ' · ' +
++        daily.quest_date,
++      meta: {
++        questDate: daily.quest_date,
++        isRetry: isRetry,
++        wordCount: wordCount,
++        startedAt: startedAt
++      }
++    });
++  } catch (e) {
++    console.warn('logVocabActivity study_start', e.message || e);
++  }
++  try {
++    await requireDb()
++      .from('vocab_student_state')
++      .upsert(
++        {
++          student_id: studentId,
++          class_id: classId,
++          last_active_at: startedAt,
++          updated_at: new Date().toISOString()
++        },
++        { onConflict: 'student_id' }
++      );
++  } catch (e) {
++    console.warn('markStudySessionStart state', e.message || e);
++  }
++  return { ok: true, questDate: daily.quest_date, startedAt: startedAt, isRetry: isRetry };
++}
++
++async function recordDailyTestResult(studentId, classId, correctCount, totalCount, opts) {
++  opts = opts || {};
+   const db = requireDb();
+   studentId = String(studentId);
+   classId = classId ? String(classId) : null;
+@@ -867,10 +918,14 @@ async function recordDailyTestResult(studentId, classId, correctCount, totalCoun
+   const daily = await getOrCreateDailyProgress(studentId, classId, settings.daily_target);
+   const total = Math.max(1, Number(totalCount) || 0);
+   const correct = Math.max(0, Math.min(total, Number(correctCount) || 0));
++  const wrongCount = Math.max(0, total - correct);
+   const score = Math.round((correct / total) * 1000) / 10;
+   const passed = score >= settings.pass_threshold;
+   const maxSessions = Math.max(1, Number(settings.max_daily_sessions) || DEFAULT_MAX_DAILY_SESSIONS);
+   const sessionsBefore = Math.max(0, Number(daily.sessions_completed) || 0);
++  const isRetry = !!opts.isRetry;
++  const durationMs = Math.max(0, Math.round(Number(opts.durationMs) || 0));
++  const startedAt = opts.startedAt ? String(opts.startedAt) : null;
+ 
+   // 0–400 ladder on EVERY submit (pass or fail). 7/10 → +6, never demotes alone.
+   const ladder = applyAttemptToLadder(state, correct, total);
+@@ -878,8 +933,12 @@ async function recordDailyTestResult(studentId, classId, correctCount, totalCoun
+     at: new Date().toISOString(),
+     correctCount: correct,
+     totalCount: total,
++    wrongCount: wrongCount,
+     score: score,
+     passed: passed,
++    isRetry: isRetry,
++    durationMs: durationMs,
++    startedAt: startedAt,
+     scoreDelta: ladder.scoreDelta,
+     beforeScore: ladder.beforeScore,
+     afterScore: ladder.afterScore,
+@@ -964,8 +1023,12 @@ async function recordDailyTestResult(studentId, classId, correctCount, totalCoun
+         questDate: daily.quest_date,
+         correctCount: correct,
+         totalCount: total,
++        wrongCount: wrongCount,
+         testScore: score,
+         passed: passed,
++        isRetry: isRetry,
++        durationMs: durationMs,
++        startedAt: startedAt,
+         scoreDelta: ladder.scoreDelta,
+         beforeScore: ladder.beforeScore,
+         afterScore: ladder.afterScore,
+@@ -1082,7 +1145,9 @@ async function recordDailyTestResult(studentId, classId, correctCount, totalCoun
+     maxSessions: maxSessions,
+     canStartAnother: sessionsCompleted < maxSessions,
+     rewardClaimedToday: false,
+-    attemptLog: attemptLog
++    attemptLog: [attemptEntry],
++    isRetry: isRetry,
++    durationMs: durationMs
+   };
+ }
+ 
+@@ -1356,31 +1421,139 @@ async function buildPlacementItem(opts) {
+   };
+ }
+ 
+-/* ----------------------------- Teacher LMS overview ----------------------------- */
++/* ----------------------------- Teacher LMS overview / monitor ----------------------------- */
++
++function eventQuestDate(ev, fallbackDate) {
++  const m = (ev && ev.meta) || {};
++  if (m.questDate) return String(m.questDate).slice(0, 10);
++  if (ev && ev.at) {
++    const d = new Date(ev.at);
++    if (!isNaN(d.getTime())) {
++      return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
++    }
++  }
++  return fallbackDate || '';
++}
++
++function buildTodayMonitorByStudent(events, questDate) {
++  const map = new Map();
++  (events || []).forEach(function (ev) {
++    const sid = String(ev.studentId || '');
++    if (!sid) return;
++    const kind = String(ev.kind || '');
++    const m = ev.meta || {};
++    const qd = eventQuestDate(ev, questDate);
++    if (qd !== questDate) return;
++    if (!map.has(sid)) {
++      map.set(sid, {
++        studyStartedAt: null,
++        lastActivityAt: null,
++        studyMinutes: 0,
++        durationMsTotal: 0,
++        setsAttempted: 0,
++        setsPassed: 0,
++        wrongTotal: 0,
++        correctTotal: 0,
++        retried: false,
++        scoreDeltaToday: 0,
++        attempts: []
++      });
++    }
++    const row = map.get(sid);
++    if (ev.at && (!row.lastActivityAt || ev.at > row.lastActivityAt)) row.lastActivityAt = ev.at;
++
++    if (kind === 'vocab_study_start') {
++      const started = m.startedAt || ev.at;
++      if (started && (!row.studyStartedAt || started < row.studyStartedAt)) row.studyStartedAt = started;
++      if (m.isRetry) row.retried = true;
++      return;
++    }
++
++    if (kind === 'vocab_set') {
++      row.setsAttempted += 1;
++      if (m.passed) row.setsPassed += 1;
++      const correct = Math.max(0, Number(m.correctCount) || 0);
++      const total = Math.max(0, Number(m.totalCount) || 0);
++      const wrong =
++        m.wrongCount != null ? Math.max(0, Number(m.wrongCount) || 0) : Math.max(0, total - correct);
++      row.correctTotal += correct;
++      row.wrongTotal += wrong;
++      if (m.isRetry) row.retried = true;
++      const dur = Math.max(0, Number(m.durationMs) || 0);
++      row.durationMsTotal += dur;
++      const started = m.startedAt || null;
++      if (started && (!row.studyStartedAt || started < row.studyStartedAt)) row.studyStartedAt = started;
++      if (!row.studyStartedAt && ev.at) row.studyStartedAt = ev.at;
++      row.scoreDeltaToday += Number(m.scoreDelta) || 0;
++      row.attempts.push({
++        at: ev.at,
++        correctCount: correct,
++        totalCount: total,
++        wrongCount: wrong,
++        passed: !!m.passed,
++        isRetry: !!m.isRetry,
++        durationMs: dur,
++        scoreDelta: Number(m.scoreDelta) || 0,
++        beforeScore: m.beforeScore,
++        afterScore: m.afterScore,
++        testScore: m.testScore
++      });
++      return;
++    }
++
++    if (kind === 'vocab_demote' && m.reason === 'inactivity_decay') {
++      row.scoreDeltaToday += Number(m.scoreDelta) || 0;
++    }
++  });
++
++  map.forEach(function (row) {
++    row.studyMinutes = Math.round((row.durationMsTotal / 60000) * 10) / 10;
++    // If duration wasn't instrumented yet, fall back to wall-clock from first start → last activity.
++    if (!row.durationMsTotal && row.studyStartedAt && row.lastActivityAt) {
++      const a = new Date(row.studyStartedAt).getTime();
++      const b = new Date(row.lastActivityAt).getTime();
++      if (isFinite(a) && isFinite(b) && b >= a) {
++        row.studyMinutes = Math.round(((b - a) / 60000) * 10) / 10;
++      }
++    }
++  });
++  return map;
++}
+ 
+ async function getClassOverview(classId) {
+   const db = requireDb();
+   classId = String(classId);
+   const students = await getEnrolledStudents(classId);
+   const ids = students.map(s => s.id);
+-  if (!ids.length) return { students: [], settings: await getClassSettings(classId) };
++  if (!ids.length) return { students: [], settings: await getClassSettings(classId), questDate: todayStr() };
+ 
+   const settings = await getClassSettings(classId);
+   const date = todayStr();
+ 
+-  const [{ data: states }, { data: dailies }] = await Promise.all([
++  const [{ data: states }, { data: dailies }, activity] = await Promise.all([
+     db.from('vocab_student_state').select('*').in('student_id', ids),
+-    db.from('vocab_daily_progress').select('*').in('student_id', ids).eq('quest_date', date)
++    db.from('vocab_daily_progress').select('*').in('student_id', ids).eq('quest_date', date),
++    listActivityEvents({ classId: classId, days: 2, limit: 500 }).catch(function () {
++      return { events: [] };
++    })
+   ]);
+ 
+   const stateById = new Map((states || []).map(s => [String(s.student_id), s]));
+   const dailyById = new Map((dailies || []).map(d => [String(d.student_id), d]));
++  const monitorById = buildTodayMonitorByStudent(activity.events || [], date);
+ 
+   const rows = students.map(function (s) {
+     const st = stateById.get(String(s.id));
+     const d = dailyById.get(String(s.id));
++    const mon = monitorById.get(String(s.id)) || null;
+     const placed = !!(st && st.placement_at);
+     const promo = placed ? clampScore(st.promotion_score) : 0;
++    const setsPassed = d ? Math.max(0, Number(d.sessions_completed) || 0) : 0;
++    const setsAttempted = mon
++      ? mon.setsAttempted
++      : d
++        ? Math.max(0, Number(d.test_attempts) || 0)
++        : 0;
+     return {
+       studentId: s.id,
+       name: s.name,
+@@ -1390,20 +1563,40 @@ async function getClassOverview(classId) {
+       promotionScore: promo,
+       promotionScoreMax: PROMOTION_SCORE_MAX,
+       promotionPercent: Math.round((promo / PROMOTION_SCORE_MAX) * 1000) / 10,
++      remainingToPromote: placed ? Math.max(0, PROMOTION_SCORE_MAX - promo) : null,
+       shieldCount: placed ? shieldFromState(st) : 0,
+       streakDays: st ? st.streak_days : 0,
+       longestStreak: st ? st.longest_streak : 0,
+       placementAt: st ? st.placement_at : null,
++      lastActiveAt: st ? st.last_active_at : null,
+       todayStudied: d ? d.studied_count : 0,
+       todayTarget: d ? d.target_count : settings.daily_target,
+       todayTestPassed: d ? !!d.test_passed : false,
+       todayTestScore: d ? d.test_score : null,
+       todayTestAttempts: d ? d.test_attempts : 0,
+-      todayAttemptLog: []
++      setsPassed: Math.max(setsPassed, mon ? mon.setsPassed : 0),
++      setsAttempted: setsAttempted,
++      studyStartedAt: mon ? mon.studyStartedAt : null,
++      studyMinutes: mon ? mon.studyMinutes : 0,
++      wrongTotal: mon ? mon.wrongTotal : 0,
++      correctTotal: mon ? mon.correctTotal : 0,
++      retried: mon ? !!mon.retried : false,
++      scoreDeltaToday: mon ? mon.scoreDeltaToday : 0,
++      todayAttemptLog: mon ? mon.attempts : [],
++      activeToday: !!(mon && (mon.setsAttempted || mon.studyStartedAt || (d && d.studied_count)))
+     };
+   });
+ 
+-  return { students: rows, settings };
++  // Active students first, then by most recent activity.
++  rows.sort(function (a, b) {
++    if (!!b.activeToday !== !!a.activeToday) return a.activeToday ? -1 : 1;
++    const at = a.studyStartedAt || '';
++    const bt = b.studyStartedAt || '';
++    if (at !== bt) return at < bt ? 1 : -1;
++    return String(a.name || '').localeCompare(String(b.name || ''));
++  });
++
++  return { students: rows, settings, questDate: date };
+ }
+ 
+ async function overrideStudentState(studentId, opts) {
+@@ -1521,6 +1714,7 @@ module.exports = {
+   saveClassSettings,
+   getDailyQueue,
+   recordReview,
++  markStudySessionStart,
+   recordDailyTestResult,
+   getStudentVocabSummary,
+   getClassOverview,
+diff --git a/server/teacher-src/Index.html b/server/teacher-src/Index.html
+index 56ac61a..cd4b508 100644
+--- a/server/teacher-src/Index.html
++++ b/server/teacher-src/Index.html
+@@ -5349,6 +5349,78 @@
+         [data-theme="dark"] .vocab-activity-detail,
+         [data-theme="dark"] .vocab-activity-time { color: #9db0bd; }
+ 
++        .vocab-monitor-cards {
++            display: grid;
++            grid-template-columns: 1fr;
++            gap: 0.75rem;
++        }
++        @media (min-width: 900px) {
++            .vocab-monitor-cards {
++                grid-template-columns: 1fr 1fr;
++            }
++        }
++        .vocab-monitor-card {
++            border: 1px solid rgba(59, 158, 221, 0.18);
++            border-radius: 16px;
++            background: #f8fbfe;
++            padding: 0.85rem 0.95rem;
++        }
++        .vocab-monitor-card.is-idle { opacity: 0.72; }
++        .vocab-monitor-card-head {
++            display: flex;
++            flex-wrap: wrap;
++            align-items: baseline;
++            gap: 0.35rem 0.6rem;
++            margin-bottom: 0.55rem;
++        }
++        .vocab-monitor-name {
++            font-weight: 800;
++            font-size: 1.02rem;
++            color: #163247;
++        }
++        .vocab-monitor-tier {
++            font-size: 0.8rem;
++            font-weight: 700;
++            color: #2b6f97;
++            background: rgba(59, 158, 221, 0.12);
++            border-radius: 999px;
++            padding: 0.12rem 0.55rem;
++        }
++        .vocab-monitor-grid {
++            display: grid;
++            grid-template-columns: 1fr 1fr;
++            gap: 0.4rem 0.75rem;
++            font-size: 0.84rem;
++        }
++        .vocab-monitor-grid .label {
++            display: block;
++            font-size: 0.7rem;
++            font-weight: 700;
++            letter-spacing: 0.02em;
++            text-transform: uppercase;
++            color: #6b7c8a;
++            margin-bottom: 0.05rem;
++        }
++        .vocab-monitor-grid .value {
++            color: #163247;
++            font-weight: 650;
++        }
++        .vocab-monitor-delta.pos { color: #0f766e; }
++        .vocab-monitor-delta.neg { color: #b45309; }
++        .vocab-monitor-actions {
++            display: flex;
++            flex-wrap: wrap;
++            gap: 0.4rem;
++            margin-top: 0.7rem;
++        }
++        [data-theme="dark"] .vocab-monitor-card {
++            background: rgba(255,255,255,0.04);
++            border-color: rgba(255,255,255,0.1);
++        }
++        [data-theme="dark"] .vocab-monitor-name,
++        [data-theme="dark"] .vocab-monitor-grid .value { color: #e8f1f7; }
++        [data-theme="dark"] .vocab-monitor-grid .label { color: #9db0bd; }
++
+         /* ===== Student detail page (opened from roster / attendance card) ===== */
+         body.teacher-mobile #studentDetailSection .step-label,
+         body.teacher-mobile #studentDetailSection .step-label .step-num {
+@@ -6034,7 +6106,7 @@
+                     <i class="fa-solid fa-key"></i> Portal logins
+                 </button>
+                 <button type="button" class="btn btn-sm btn-outline-info rounded-pill px-3" id="vocabLmsBtn">
+-                    <i class="fa-solid fa-layer-group"></i> Vocab LMS
++                    <i class="fa-solid fa-layer-group"></i> Vocab Monitor
+                 </button>
+                 <button type="button" class="btn btn-sm btn-outline-primary rounded-pill px-3" id="vocabActivityBtn">
+                     <i class="fa-solid fa-list-ul"></i> Vocab Activity
+@@ -6263,7 +6335,7 @@
+             <button type="button" class="teacher-more-btn" data-trigger-click="openReportBtn"><i class="fa-solid fa-chart-line"></i> Monthly Report</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassLogBtn"><i class="fa-solid fa-book-open"></i> Class Log</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="openClassPendingBtn"><i class="fa-solid fa-hourglass-half"></i> Pending HW</button>
+-            <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-layer-group"></i> Vocab LMS</button>
++            <button type="button" class="teacher-more-btn" data-trigger-click="vocabLmsBtn"><i class="fa-solid fa-layer-group"></i> Vocab Monitor</button>
+             <button type="button" class="teacher-more-btn" data-trigger-click="vocabActivityBtn"><i class="fa-solid fa-list-ul"></i> Vocab Activity</button>
+             <button type="button" class="teacher-more-btn" id="teacherMobileThemeBtn"><i class="fa-solid fa-moon"></i> Dark Mode</button>
+         </div>
+@@ -6828,17 +6900,35 @@
+     <div class="modal-dialog modal-dialog-centered modal-xl modal-dialog-scrollable">
+         <div class="modal-content">
+             <div class="modal-header">
+-                <h5 class="modal-title"><i class="fa-solid fa-layer-group"></i> Vocab LMS — <span id="vocabLmsClassName">Class</span></h5>
++                <h5 class="modal-title"><i class="fa-solid fa-layer-group"></i> Vocab Monitor — <span id="vocabLmsClassName">Class</span></h5>
+                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+             </div>
+             <div class="modal-body">
+                 <div class="abuse-hub-tabs" role="tablist">
+-                    <button type="button" class="abuse-hub-tab active" id="vocabLmsTabOverviewBtn" data-vocab-lms-tab="overview">Overview &amp; settings</button>
++                    <button type="button" class="abuse-hub-tab active" id="vocabLmsTabOverviewBtn" data-vocab-lms-tab="overview">Today monitor</button>
+                     <button type="button" class="abuse-hub-tab" id="vocabLmsTabBankBtn" data-vocab-lms-tab="bank">Word bank</button>
+                     <button type="button" class="abuse-hub-tab" id="vocabLmsTabTiersBtn" data-vocab-lms-tab="tiers">By tier</button>
++                    <button type="button" class="abuse-hub-tab" id="vocabLmsTabSettingsBtn" data-vocab-lms-tab="settings">Settings</button>
+                 </div>
+ 
+                 <div id="vocabLmsOverviewPane" class="abuse-hub-pane">
++                    <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
++                        <div class="small text-muted" id="vocabLmsMonitorMeta">Live Vocab Booster monitor for today (Seoul).</div>
++                        <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabLmsRefreshBtn">
++                            <i class="fa-solid fa-rotate"></i> Refresh
++                        </button>
++                    </div>
++                    <div id="vocabLmsOverviewLoading" class="text-muted small py-3">Loading…</div>
++                    <div id="vocabLmsRosterWrap" class="d-none">
++                        <div id="vocabLmsMonitorCards" class="vocab-monitor-cards"></div>
++                        <p class="text-muted small mt-3 mb-0">
++                            Start time / study minutes / retry appear after students use the updated portal.
++                            Older attempts still show score, wrongs, and promotion delta from Activity logs.
++                        </p>
++                    </div>
++                </div>
++
++                <div id="vocabLmsSettingsPane" class="abuse-hub-pane d-none">
+                     <div class="row g-3 mb-3">
+                         <div class="col-md-4">
+                             <label class="form-label small mb-1">Daily target (words/set)</label>
+@@ -6853,35 +6943,10 @@
+                             <input type="number" class="form-control form-control-sm" id="vocabLmsMaxSessions" min="1" max="5" value="3">
+                         </div>
+                     </div>
+-                    <p class="text-muted small mb-3 mb-md-2">Each passed set → Lucky Draw ticket + tier dollar bonus. Extra sets also build tier mastery (80% to promote).</p>
+-                    <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+-                        <button type="button" class="btn btn-sm btn-primary" id="vocabLmsSaveSettingsBtn">
+-                            <i class="fa-solid fa-floppy-disk"></i> Save settings
+-                        </button>
+-                        <button type="button" class="btn btn-outline-secondary btn-sm" id="vocabLmsRefreshBtn">
+-                            <i class="fa-solid fa-rotate"></i> Refresh
+-                        </button>
+-                    </div>
+-                    <div id="vocabLmsOverviewLoading" class="text-muted small py-3">Loading…</div>
+-                    <div class="table-responsive d-none" id="vocabLmsRosterWrap">
+-                        <table class="table table-sm table-hover align-middle">
+-                            <thead>
+-                                <tr>
+-                                    <th>Student</th>
+-                                    <th>Tier</th>
+-                                    <th>Streak</th>
+-                                    <th>Today</th>
+-                                    <th>Test</th>
+-                                    <th>Actions</th>
+-                                </tr>
+-                            </thead>
+-                            <tbody id="vocabLmsRosterBody"></tbody>
+-                        </table>
+-                        <p class="text-muted small mt-2 mb-0">
+-                            <strong>Reset Placement</strong> sets the student’s grade and lets them take the Placement test again.
+-                            Gift grants a random Lucky Draw ticket.
+-                        </p>
+-                    </div>
++                    <p class="text-muted small mb-3">Each passed set → Lucky Draw ticket + tier dollar bonus. Extra sets also build tier mastery (80% to promote).</p>
++                    <button type="button" class="btn btn-sm btn-primary" id="vocabLmsSaveSettingsBtn">
++                        <i class="fa-solid fa-floppy-disk"></i> Save settings
++                    </button>
+                 </div>
+ 
+                 <div id="vocabLmsBankPane" class="abuse-hub-pane d-none">
+@@ -16268,10 +16333,14 @@
+         document.getElementById('vocabLmsTabBankBtn').classList.toggle('active', tab === 'bank');
+         const tiersBtn = document.getElementById('vocabLmsTabTiersBtn');
+         if (tiersBtn) tiersBtn.classList.toggle('active', tab === 'tiers');
++        const settingsBtn = document.getElementById('vocabLmsTabSettingsBtn');
++        if (settingsBtn) settingsBtn.classList.toggle('active', tab === 'settings');
+         document.getElementById('vocabLmsOverviewPane').classList.toggle('d-none', tab !== 'overview');
+         document.getElementById('vocabLmsBankPane').classList.toggle('d-none', tab !== 'bank');
+         const tiersPane = document.getElementById('vocabLmsTiersPane');
+         if (tiersPane) tiersPane.classList.toggle('d-none', tab !== 'tiers');
++        const settingsPane = document.getElementById('vocabLmsSettingsPane');
++        if (settingsPane) settingsPane.classList.toggle('d-none', tab !== 'settings');
+         if (tab === 'bank') resumeVocabGenJobIfAny();
+         if (tab === 'tiers') refreshVocabLmsTierStats();
+     }
+@@ -16288,11 +16357,13 @@
+                 document.getElementById('vocabLmsPassThreshold').value = vocabLmsState.settings.pass_threshold != null ? vocabLmsState.settings.pass_threshold : 100;
+                 var maxSessEl = document.getElementById('vocabLmsMaxSessions');
+                 if (maxSessEl) maxSessEl.value = vocabLmsState.settings.max_daily_sessions || 3;
+-                renderVocabLmsRoster(res.students || []);
++                renderVocabLmsRoster(res.students || [], res.questDate);
+                 document.getElementById('vocabLmsOverviewLoading').classList.add('d-none');
++                document.getElementById('vocabLmsOverviewLoading').textContent = 'Loading…';
+                 document.getElementById('vocabLmsRosterWrap').classList.remove('d-none');
+             })
+             .catch(function(err) {
++                document.getElementById('vocabLmsOverviewLoading').classList.remove('d-none');
+                 document.getElementById('vocabLmsOverviewLoading').textContent = err.message || 'Could not load roster.';
+             });
+     }
+@@ -16364,41 +16435,100 @@
+         setText('vocabLmsTierFootMissing', missing);
+     }
+ 
+-    function renderVocabLmsRoster(students) {
+-        const body = document.getElementById('vocabLmsRosterBody');
++    function formatVocabMonitorTime(iso) {
++        if (!iso) return '—';
++        try {
++            var d = new Date(iso);
++            if (isNaN(d.getTime())) return '—';
++            return d.toLocaleString('en-CA', {
++                timeZone: 'Asia/Seoul',
++                month: 'short',
++                day: 'numeric',
++                hour: '2-digit',
++                minute: '2-digit',
++                hour12: false
++            });
++        } catch (e) {
++            return '—';
++        }
++    }
++
++    function formatVocabMonitorDelta(n) {
++        var v = Number(n) || 0;
++        if (!v) return '<span class="vocab-monitor-delta">0</span>';
++        var cls = v > 0 ? 'pos' : 'neg';
++        return '<span class="vocab-monitor-delta ' + cls + '">' + (v > 0 ? '+' : '') + v + '</span>';
++    }
++
++    function renderVocabLmsRoster(students, questDate) {
++        const cards = document.getElementById('vocabLmsMonitorCards');
++        const meta = document.getElementById('vocabLmsMonitorMeta');
++        if (!cards) return;
++        if (meta) {
++            var active = (students || []).filter(function(s) { return s.activeToday; }).length;
++            meta.textContent =
++                'Today monitor' + (questDate ? ' · ' + questDate : '') +
++                ' (Seoul) · ' + active + ' active / ' + (students || []).length + ' students';
++        }
+         if (!students.length) {
+-            body.innerHTML = '<tr><td colspan="6" class="text-muted small">No enrolled students.</td></tr>';
++            cards.innerHTML = '<div class="text-muted small py-2">No enrolled students.</div>';
+             return;
+         }
+-        body.innerHTML = students.map(function(s) {
+-            const streak = (s.streakDays || 0) + (s.streakDays ? ' 🔥' : '');
+-            const testBadge = s.todayTestPassed
+-                ? '<span class="badge bg-success">Passed' + (s.todayTestScore != null ? ' (' + s.todayTestScore + '%)' : '') + '</span>'
+-                : '<span class="badge bg-secondary">Not yet</span>';
+-            return '<tr>' +
+-                '<td>' + escapeHtml(s.name || s.studentId) + '</td>' +
+-                '<td>' + escapeHtml(s.tierName || '—') + (s.gradeLevel ? ' <span class="text-muted small">(Grade ' + s.gradeLevel + ')</span>' : '') + '</td>' +
+-                '<td>' + streak + '</td>' +
+-                '<td>' + (s.todayStudied || 0) + ' / ' + (s.todayTarget || '—') + '</td>' +
+-                '<td>' + testBadge + '</td>' +
+-                '<td class="text-nowrap">' +
+-                '<button type="button" class="btn btn-outline-secondary btn-sm vocab-lms-override-btn" data-student-id="' + escapeHtml(s.studentId) + '" title="Set grade and unlock Placement retake">' +
+-                '<i class="fa-solid fa-rotate-left"></i> Reset Placement</button> ' +
+-                '<button type="button" class="btn btn-outline-warning btn-sm vocab-lms-reward-btn" data-student-id="' + escapeHtml(s.studentId) + '" title="Grant a random Lucky Draw ticket">' +
+-                '<i class="fa-solid fa-gift"></i></button>' +
+-                '</td></tr>';
++        cards.innerHTML = students.map(function(s) {
++            var tier = s.tierName
++                ? escapeHtml(s.tierName) + (s.gradeLevel ? ' · G' + s.gradeLevel : '')
++                : 'Not placed';
++            var setsLabel = (s.setsPassed || 0) + ' passed / ' + (s.setsAttempted || 0) + ' tries';
++            var wrongLabel = (s.wrongTotal || 0) + ' wrong' +
++                (s.correctTotal ? ' · ' + s.correctTotal + ' correct' : '');
++            var promo = s.promotionScore != null
++                ? (s.promotionScore + ' / ' + (s.promotionScoreMax || 400) +
++                    (s.remainingToPromote != null ? ' · ' + s.remainingToPromote + ' to up' : ''))
++                : '—';
++            var mins = s.studyMinutes != null ? s.studyMinutes : 0;
++            return '<div class="vocab-monitor-card' + (s.activeToday ? '' : ' is-idle') + '">' +
++                '<div class="vocab-monitor-card-head">' +
++                '<span class="vocab-monitor-name">' + escapeHtml(s.name || s.studentId) + '</span>' +
++                '<span class="vocab-monitor-tier">' + tier + '</span>' +
++                (s.retried ? '<span class="badge bg-warning text-dark">Restudy</span>' : '') +
++                (s.todayTestPassed ? '<span class="badge bg-success">Passed today</span>' : '') +
++                '</div>' +
++                '<div class="vocab-monitor-grid">' +
++                '<div><span class="label">Started</span><span class="value">' +
++                escapeHtml(formatVocabMonitorTime(s.studyStartedAt)) + '</span></div>' +
++                '<div><span class="label">Study time</span><span class="value">' +
++                (mins ? mins + ' min' : '—') + '</span></div>' +
++                '<div><span class="label">Sets</span><span class="value">' + escapeHtml(setsLabel) + '</span></div>' +
++                '<div><span class="label">Wrongs</span><span class="value">' + escapeHtml(wrongLabel) + '</span></div>' +
++                '<div><span class="label">Promo Δ today</span><span class="value">' +
++                formatVocabMonitorDelta(s.scoreDeltaToday) + '</span></div>' +
++                '<div><span class="label">Promotion</span><span class="value">' + escapeHtml(promo) + '</span></div>' +
++                '</div>' +
++                '<div class="vocab-monitor-actions">' +
++                '<button type="button" class="btn btn-outline-secondary btn-sm vocab-lms-override-btn" data-student-id="' +
++                escapeHtml(s.studentId) + '"><i class="fa-solid fa-rotate-left"></i> Reset Placement</button>' +
++                '<button type="button" class="btn btn-outline-warning btn-sm vocab-lms-reward-btn" data-student-id="' +
++                escapeHtml(s.studentId) + '"><i class="fa-solid fa-gift"></i></button>' +
++                '<button type="button" class="btn btn-outline-primary btn-sm vocab-lms-activity-btn" data-student-id="' +
++                escapeHtml(s.studentId) + '"><i class="fa-solid fa-list-ul"></i> Log</button>' +
++                '</div></div>';
+         }).join('');
+ 
+-        body.querySelectorAll('.vocab-lms-override-btn').forEach(function(btn) {
++        cards.querySelectorAll('.vocab-lms-override-btn').forEach(function(btn) {
+             btn.addEventListener('click', function() {
+                 promptVocabOverride(btn.getAttribute('data-student-id'));
+             });
+         });
+-        body.querySelectorAll('.vocab-lms-reward-btn').forEach(function(btn) {
++        cards.querySelectorAll('.vocab-lms-reward-btn').forEach(function(btn) {
+             btn.addEventListener('click', function() {
+                 grantVocabRewardManually(btn.getAttribute('data-student-id'));
+             });
+         });
++        cards.querySelectorAll('.vocab-lms-activity-btn').forEach(function(btn) {
++            btn.addEventListener('click', function() {
++                openVocabActivityModal();
++            });
++        });
+     }
+ 
+     function promptVocabOverride(studentId) {
+-- 
+2.43.0
+
